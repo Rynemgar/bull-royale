@@ -302,7 +302,7 @@ bot.on('callback_query', async (query) => {
         const ms = nextMidnightUtc.getTime() - utcNow.getTime();
         const hours = Math.floor(ms / 3600000);
         const minutes = Math.floor((ms % 3600000) / 60000);
-        await bot.sendMessage(chatId, `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).`);
+        await bot.sendMessage(chatId, `${getUsernameLabel(from)} — You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).`);
         if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Cooldown active' });
         return;
       }

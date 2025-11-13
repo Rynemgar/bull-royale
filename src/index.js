@@ -89,9 +89,12 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       await bot.sendMessage(chatId, `${getUsernameLabel(user)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`);
     } else {
       // 75% chance positive (1..15), 25% chance negative (-1..-5), never 0
-      const delta = (Math.random() < 0.75)
+      const mustBePositive = current && Number(current.length_cm) === 0;
+      const delta = mustBePositive
         ? (1 + Math.floor(Math.random() * 15))
-        : (-1 - Math.floor(Math.random() * 5));
+        : ((Math.random() < 0.75)
+          ? (1 + Math.floor(Math.random() * 15))
+          : (-1 - Math.floor(Math.random() * 5)));
       const updated = await applyGrowth(chatId, userId, delta, utcNow);
       const sign = delta >= 0 ? '+' : '';
       await bot.sendMessage(chatId, `${getUsernameLabel(user)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`);
@@ -314,9 +317,12 @@ bot.on('callback_query', async (query) => {
         const pctText = Math.round(pct * 100);
         await bot.sendMessage(chatId, `${getUsernameLabel(from)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`);
       } else {
-        const delta = (Math.random() < 0.75)
+        const mustBePositive = current && Number(current.length_cm) === 0;
+        const delta = mustBePositive
           ? (1 + Math.floor(Math.random() * 15))
-          : (-1 - Math.floor(Math.random() * 5));
+          : ((Math.random() < 0.75)
+            ? (1 + Math.floor(Math.random() * 15))
+            : (-1 - Math.floor(Math.random() * 5)));
         const updated = await applyGrowth(chatId, fromId, delta, utcNow);
         const sign = delta >= 0 ? '+' : '';
         await bot.sendMessage(chatId, `${getUsernameLabel(from)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`);

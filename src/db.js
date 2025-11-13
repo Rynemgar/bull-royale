@@ -34,6 +34,10 @@ export async function initSchema() {
       );
     `);
     await client.query(`
+      alter table pf_users
+      add column if not exists last_grow_button_at timestamptz null
+    `);
+    await client.query(`
       create table if not exists pf_challenges (
         id bigserial primary key,
         chat_id bigint not null,
@@ -128,6 +132,25 @@ export async function addLength(chatId, userId, delta) {
     [delta, chatId, userId]
   );
   return await getUser(chatId, userId);
+}
+
+export async function canPressGrowButton(chatId, userId, utcNow) {
+  const res = await pool.query(
+    `select last_grow_button_at from pf_users where chat_id=$1 and user_id=$2`,
+    [chatId, userId]
+  );
+  if (res.rowCount === 0) return true;
+  const last = res.rows[0].last_grow_button_at;
+  if (!last) return true;
+  const diffMs = utcNow.getTime() - new Date(last).getTime();
+  return diffMs >= 3600000; // 1 hour
+}
+
+export async function recordGrowButtonPress(chatId, userId, utcNow) {
+  await pool.query(
+    `update pf_users set last_grow_button_at = $1 where chat_id=$2 and user_id=$3`,
+    [utcNow.toISOString(), chatId, userId]
+  );
 }
 
 export async function getOpenChallengeByMessageId(chatId, messageId) {

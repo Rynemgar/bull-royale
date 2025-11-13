@@ -17,6 +17,8 @@ import {
   selectOrCreatePotd,
   cancelOpenChallengesByAttacker,
   getTopUsers,
+  canPressGrowButton,
+  recordGrowButtonPress,
   resolveChallengeTransaction
 } from './db.js';
 
@@ -38,6 +40,23 @@ function getUsernameLabel(from) {
   return `${from.id}`;
 }
 
+function withGrowButton(options) {
+  const existing = options && options.reply_markup && Array.isArray(options.reply_markup.inline_keyboard)
+    ? options.reply_markup.inline_keyboard.slice()
+    : [];
+  const inline_keyboard = existing.concat([[{ text: 'Grow now', callback_data: 'grow_now' }]]);
+  return {
+    ...(options || {}),
+    reply_markup: {
+      ...(options && options.reply_markup ? options.reply_markup : {}),
+      inline_keyboard
+    }
+  };
+}
+
+function sendWithGrow(chatId, text, options) {
+  return bot.sendMessage(chatId, text, withGrowButton(options));
+}
 await initSchema();
 const bot = new TelegramBot(token, { polling: true });
 
@@ -91,16 +110,16 @@ bot.onText(/^\/give(@\w+)?\s+(.+?)\s+(-?\d+)\b/i, async (msg, match) => {
   const targetRef = (match?.[2] || '').trim();
   const amount = parseInt(match?.[3] || '0', 10);
   if (!Number.isFinite(amount) || amount === 0) {
-    await bot.sendMessage(chatId, 'Amount must be a non-zero integer.');
+    await sendWithGrow(chatId, 'Amount must be a non-zero integer.');
     return;
   }
   try {
     if (!ADMIN_USER_ID) {
-      await bot.sendMessage(chatId, 'ADMIN_USER_ID is not configured.');
+      await sendWithGrow(chatId, 'ADMIN_USER_ID is not configured.');
       return;
     }
     if (from.id !== ADMIN_USER_ID) {
-      await bot.sendMessage(chatId, 'You are not allowed to use /give.');
+      await sendWithGrow(chatId, 'You are not allowed to use /give.');
       return;
     }
     let targetUserId = null;
@@ -129,15 +148,15 @@ bot.onText(/^\/give(@\w+)?\s+(.+?)\s+(-?\d+)\b/i, async (msg, match) => {
       }
     }
     if (!targetUserId) {
-      await bot.sendMessage(chatId, 'Could not identify the target user. Reply to a user or mention someone I know.');
+      await sendWithGrow(chatId, 'Could not identify the target user. Reply to a user or mention someone I know.');
       return;
     }
     const updated = await addLength(chatId, targetUserId, amount);
     const sign = amount >= 0 ? '+' : '';
-    await bot.sendMessage(chatId, `Awarded ${sign}${amount}cm to ${targetLabel}. New length: ${updated.length_cm}cm.`);
+    await sendWithGrow(chatId, `Awarded ${sign}${amount}cm to ${targetLabel}. New length: ${updated.length_cm}cm.`);
   } catch (err) {
     console.error('give error', err);
-    await bot.sendMessage(chatId, 'Failed to process /give.');
+    await sendWithGrow(chatId, 'Failed to process /give.');
   }
 });
 
@@ -150,17 +169,17 @@ bot.onText(/^\/top(@\w+)?\b/i, async (msg) => {
   try {
     const top = await getTopUsers(chatId, 10);
     if (!top || top.length === 0) {
-      await bot.sendMessage(chatId, 'No members found.');
+      await sendWithGrow(chatId, 'No members found.');
       return;
     }
     const lines = top.map((u, idx) => {
       const label = getUsernameLabel({ id: u.user_id, username: u.username, first_name: u.first_name });
       return `${idx + 1}. ${label} — ${u.length_cm}cm`;
     });
-    await bot.sendMessage(chatId, `Top 10 dicks:\n${lines.join('\n')}`);
+    await sendWithGrow(chatId, `Top 10 dicks:\n${lines.join('\n')}`);
   } catch (err) {
     console.error('top error', err);
-    await bot.sendMessage(chatId, 'Could not fetch leaderboard.');
+    await sendWithGrow(chatId, 'Could not fetch leaderboard.');
   }
 });
 
@@ -173,24 +192,24 @@ bot.onText(/^\/attack(@\w+)?(?:\s+(\d+))?/i, async (msg, match) => {
   await ensureUser(chatId, user);
   const bet = parseInt(match?.[2] || '', 10);
   if (!bet || isNaN(bet) || bet <= 0) {
-    await bot.sendMessage(chatId, 'Usage: /attack <bet_cm> (positive integer)');
+    await sendWithGrow(chatId, 'Usage: /attack <bet_cm> (positive integer)');
     return;
   }
   try {
     const me = await getUser(chatId, userId);
     if (!me) {
-      await bot.sendMessage(chatId, 'You are not registered yet. Try again.');
+      await sendWithGrow(chatId, 'You are not registered yet. Try again.');
       return;
     }
     if (me.length_cm < bet) {
-      await bot.sendMessage(chatId, `Insufficient length. You have ${me.length_cm}cm but tried to bet ${bet}cm.`);
+      await sendWithGrow(chatId, `Insufficient length. You have ${me.length_cm}cm but tried to bet ${bet}cm.`);
       return;
     }
     const existing = await getOpenChallengeByAttacker(chatId, userId);
     if (existing) {
       await cancelOpenChallengesByAttacker(chatId, userId);
     }
-    const message = await bot.sendMessage(
+    const message = await sendWithGrow(
       chatId,
       `${getUsernameLabel(user)} challenges the group to a "Sword" fight for ${bet}cm!\nTap "En Guard" to accept.`,
       {
@@ -202,7 +221,7 @@ bot.onText(/^\/attack(@\w+)?(?:\s+(\d+))?/i, async (msg, match) => {
     await createChallenge(chatId, userId, bet, message.message_id);
   } catch (err) {
     console.error('attack error', err);
-    await bot.sendMessage(chatId, 'Something went wrong creating the challenge.');
+    await sendWithGrow(chatId, 'Something went wrong creating the challenge.');
   }
 });
 
@@ -216,24 +235,19 @@ bot.onText(/^\/stats(@\w+)?\b/i, async (msg) => {
   try {
     const me = await getUser(chatId, userId);
     if (!me) {
-      await bot.sendMessage(chatId, 'No stats yet. Use /grow to begin.');
+      await sendWithGrow(chatId, 'No stats yet. Use /grow to begin.');
       return;
     }
-    const utcNow = getUtcDate();
-    const canUseGrow = await canGrowToday(chatId, userId, utcNow);
     const total = Number(me.wins) + Number(me.losses);
     const pct = total > 0 ? Math.round((Number(me.wins) / total) * 100) : 0;
     const danger = Number(me.length_cm) > 100
       ? `\nWarning: You are in the danger zone. /grow has a 15% chance to snap your dick (-10% to -50%).`
       : '';
     const text = `${getUsernameLabel(user)}\nLength: ${me.length_cm}cm\nW/L: ${me.wins}/${me.losses} (${pct}%)${danger}`;
-    const options = canUseGrow
-      ? { reply_markup: { inline_keyboard: [[{ text: 'Grow now', callback_data: 'grow_now' }]] } }
-      : undefined;
-    await bot.sendMessage(chatId, text, options);
+    await sendWithGrow(chatId, text);
   } catch (err) {
     console.error('stats error', err);
-    await bot.sendMessage(chatId, 'Could not load stats.');
+    await sendWithGrow(chatId, 'Could not load stats.');
   }
 });
 
@@ -247,15 +261,15 @@ bot.onText(/^\/phallusoftheday(@\w+)?\b/i, async (msg) => {
   try {
     const potd = await selectOrCreatePotd(chatId, utcNow);
     if (!potd) {
-      await bot.sendMessage(chatId, 'No registered members found to choose from.');
+      await sendWithGrow(chatId, 'No registered members found to choose from.');
       return;
     }
     const dateStr = utcNow.toISOString().slice(0, 10);
     const label = getUsernameLabel({ id: potd.user_id, username: potd.username, first_name: potd.first_name });
-    await bot.sendMessage(chatId, `Dick of the day goes to: ${label} — ${potd.length_cm}cm`);
+    await sendWithGrow(chatId, `Dick of the day goes to: ${label} — ${potd.length_cm}cm`);
   } catch (err) {
     console.error('potd error', err);
-    await bot.sendMessage(chatId, 'Could not determine Phallus of the Day.');
+    await sendWithGrow(chatId, 'Could not determine Phallus of the Day.');
   }
 });
 
@@ -275,6 +289,12 @@ bot.on('callback_query', async (query) => {
     try {
       await ensureUser(chatId, from);
       const utcNow = getUtcDate();
+      const allowButton = await canPressGrowButton(chatId, fromId, utcNow);
+      if (!allowButton) {
+        if (query.id) await bot.answerCallbackQuery(query.id);
+        return;
+      }
+      await recordGrowButtonPress(chatId, fromId, utcNow);
       const allowed = await canGrowToday(chatId, fromId, utcNow);
       if (!allowed) {
         const nextMidnightUtc = new Date(utcNow);

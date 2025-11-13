@@ -219,12 +219,18 @@ bot.onText(/^\/stats(@\w+)?\b/i, async (msg) => {
       await bot.sendMessage(chatId, 'No stats yet. Use /grow to begin.');
       return;
     }
+    const utcNow = getUtcDate();
+    const canUseGrow = await canGrowToday(chatId, userId, utcNow);
     const total = Number(me.wins) + Number(me.losses);
     const pct = total > 0 ? Math.round((Number(me.wins) / total) * 100) : 0;
     const danger = Number(me.length_cm) > 100
       ? `\nWarning: You are in the danger zone. /grow has a 15% chance to snap your dick (-10% to -50%).`
       : '';
-    await bot.sendMessage(chatId, `${getUsernameLabel(user)}\nLength: ${me.length_cm}cm\nW/L: ${me.wins}/${me.losses} (${pct}%)${danger}`);
+    const text = `${getUsernameLabel(user)}\nLength: ${me.length_cm}cm\nW/L: ${me.wins}/${me.losses} (${pct}%)${danger}`;
+    const options = canUseGrow
+      ? { reply_markup: { inline_keyboard: [[{ text: 'Grow now', callback_data: 'grow_now' }]] } }
+      : undefined;
+    await bot.sendMessage(chatId, text, options);
   } catch (err) {
     console.error('stats error', err);
     await bot.sendMessage(chatId, 'Could not load stats.');
@@ -264,6 +270,47 @@ bot.on('callback_query', async (query) => {
   const chatId = msg.chat.id;
   const from = query.from;
   const fromId = from.id;
+  // Handle grow-now from stats
+  if (data === 'grow_now') {
+    try {
+      await ensureUser(chatId, from);
+      const utcNow = getUtcDate();
+      const allowed = await canGrowToday(chatId, fromId, utcNow);
+      if (!allowed) {
+        const nextMidnightUtc = new Date(utcNow);
+        nextMidnightUtc.setUTCHours(24, 0, 0, 0);
+        const ms = nextMidnightUtc.getTime() - utcNow.getTime();
+        const hours = Math.floor(ms / 3600000);
+        const minutes = Math.floor((ms % 3600000) / 60000);
+        await bot.sendMessage(chatId, `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).`);
+        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Cooldown active' });
+        return;
+      }
+      const current = await getUser(chatId, fromId);
+      if (current && Number(current.length_cm) > 100 && Math.random() < 0.15) {
+        const pct = 0.10 + Math.random() * 0.40;
+        const loss = Math.max(1, Math.floor(Number(current.length_cm) * pct));
+        const updated = await applyGrowth(chatId, fromId, -loss, utcNow);
+        const pctText = Math.round(pct * 100);
+        await bot.sendMessage(chatId, `${getUsernameLabel(from)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`);
+      } else {
+        const delta = (Math.random() < 0.75)
+          ? (1 + Math.floor(Math.random() * 15))
+          : (-1 - Math.floor(Math.random() * 5));
+        const updated = await applyGrowth(chatId, fromId, delta, utcNow);
+        const sign = delta >= 0 ? '+' : '';
+        await bot.sendMessage(chatId, `${getUsernameLabel(from)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`);
+      }
+      if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Grown!' });
+    } catch (err) {
+      console.error('grow_now error', err);
+      if (query.id) {
+        try { await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' }); } catch {}
+      }
+    }
+    return;
+  }
+  // Handle accept challenge
   if (!data.startsWith('accept:')) {
     if (query.id) bot.answerCallbackQuery(query.id);
     return;

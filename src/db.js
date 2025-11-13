@@ -80,6 +80,16 @@ export async function getUser(chatId, userId) {
   return res.rows[0] || null;
 }
 
+export async function getUserByUsername(chatId, username) {
+  if (!username) return null;
+  const uname = username.replace(/^@/, '');
+  const res = await pool.query(
+    `select * from pf_users where chat_id = $1 and lower(username) = lower($2)`,
+    [chatId, uname]
+  );
+  return res.rows[0] || null;
+}
+
 export async function canGrowToday(chatId, userId, utcDate) {
   const res = await pool.query(
     `select last_grow_date from pf_users where chat_id=$1 and user_id=$2`,
@@ -106,6 +116,18 @@ export async function applyGrowth(chatId, userId, delta, utcDate) {
   );
   const updated = await getUser(chatId, userId);
   return updated;
+}
+
+export async function addLength(chatId, userId, delta) {
+  await pool.query(
+    `
+    update pf_users
+    set length_cm = greatest(0, length_cm + $1)
+    where chat_id = $2 and user_id = $3
+    `,
+    [delta, chatId, userId]
+  );
+  return await getUser(chatId, userId);
 }
 
 export async function getOpenChallengeByMessageId(chatId, messageId) {
@@ -138,6 +160,13 @@ export async function getOpenChallengeByAttacker(chatId, attackerUserId) {
     [chatId, attackerUserId]
   );
   return res.rows[0] || null;
+}
+
+export async function cancelOpenChallengesByAttacker(chatId, attackerUserId) {
+  await pool.query(
+    `update pf_challenges set status='cancelled' where chat_id=$1 and attacker_user_id=$2 and status='open'`,
+    [chatId, attackerUserId]
+  );
 }
 
 export async function resolveChallengeTransaction(challengeId, chatId, acceptorUserId, rng = Math.random) {
@@ -261,6 +290,20 @@ export async function selectOrCreatePotd(chatId, utcDate, rng = Math.random) {
   // Return final selection
   const finalRow = await getPotd(chatId, utcDate);
   return finalRow;
+}
+
+export async function getTopUsers(chatId, limit = 10) {
+  const res = await pool.query(
+    `
+    select user_id, username, first_name, length_cm, wins, losses
+    from pf_users
+    where chat_id = $1
+    order by length_cm desc, wins desc, user_id asc
+    limit $2
+    `,
+    [chatId, Math.max(1, Math.min(limit, 50))]
+  );
+  return res.rows;
 }
 
 

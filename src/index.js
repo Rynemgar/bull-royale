@@ -6,11 +6,17 @@ import {
   initSchema,
   ensureUser,
   getUser,
+  getUserByUsername,
   canGrowToday,
   applyGrowth,
+  addLength,
   createChallenge,
   getOpenChallengeByAttacker,
   getOpenChallengeByMessageId,
+  getPotd,
+  selectOrCreatePotd,
+  cancelOpenChallengesByAttacker,
+  getTopUsers,
   resolveChallengeTransaction
 } from './db.js';
 
@@ -19,6 +25,8 @@ if (!token) {
   console.error('TELEGRAM_BOT_TOKEN is not set.');
   process.exit(1);
 }
+
+const ADMIN_USER_ID = 6933188641;
 
 function getUtcDate() {
   return new Date(new Date().toISOString());
@@ -31,9 +39,7 @@ function getUsernameLabel(from) {
 }
 
 await initSchema();
-
-const useWebhook = !!process.env.WEBHOOK_DOMAIN && !!process.env.PORT;
-const bot = new TelegramBot(token, { polling: !useWebhook });
+const bot = new TelegramBot(token, { polling: true });
 
 // /grow
 bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
@@ -54,13 +60,107 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       await bot.sendMessage(chatId, `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).`);
       return;
     }
-    const delta = Math.floor(Math.random() * 16) - 5;
-    const updated = await applyGrowth(chatId, userId, delta, utcNow);
-    const sign = delta >= 0 ? '+' : '';
-    await bot.sendMessage(chatId, `${getUsernameLabel(user)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`);
+    // If already over 100cm, 15% chance to snap and lose 10–50% total
+    const current = await getUser(chatId, userId);
+    if (current && Number(current.length_cm) > 100 && Math.random() < 0.15) {
+      const pct = 0.10 + Math.random() * 0.40; // 10%..50%
+      const loss = Math.max(1, Math.floor(Number(current.length_cm) * pct));
+      const updated = await applyGrowth(chatId, userId, -loss, utcNow);
+      const pctText = Math.round(pct * 100);
+      await bot.sendMessage(chatId, `${getUsernameLabel(user)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`);
+    } else {
+      // 75% chance positive (1..15), 25% chance negative (-1..-5), never 0
+      const delta = (Math.random() < 0.75)
+        ? (1 + Math.floor(Math.random() * 15))
+        : (-1 - Math.floor(Math.random() * 5));
+      const updated = await applyGrowth(chatId, userId, delta, utcNow);
+      const sign = delta >= 0 ? '+' : '';
+      await bot.sendMessage(chatId, `${getUsernameLabel(user)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`);
+    }
   } catch (err) {
     console.error('grow error', err);
     await bot.sendMessage(chatId, 'Something went wrong processing /grow.');
+  }
+});
+
+// /give @user <number> — admin only, group-scoped
+bot.onText(/^\/give(@\w+)?\s+(.+?)\s+(-?\d+)\b/i, async (msg, match) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  const from = msg.from;
+  const targetRef = (match?.[2] || '').trim();
+  const amount = parseInt(match?.[3] || '0', 10);
+  if (!Number.isFinite(amount) || amount === 0) {
+    await bot.sendMessage(chatId, 'Amount must be a non-zero integer.');
+    return;
+  }
+  try {
+    if (!ADMIN_USER_ID) {
+      await bot.sendMessage(chatId, 'ADMIN_USER_ID is not configured.');
+      return;
+    }
+    if (from.id !== ADMIN_USER_ID) {
+      await bot.sendMessage(chatId, 'You are not allowed to use /give.');
+      return;
+    }
+    let targetUserId = null;
+    let targetLabel = null;
+    // Prefer reply target if present
+    if (msg.reply_to_message && msg.reply_to_message.from) {
+      targetUserId = msg.reply_to_message.from.id;
+      targetLabel = getUsernameLabel(msg.reply_to_message.from);
+      await ensureUser(chatId, msg.reply_to_message.from);
+    } else {
+      // Try text_mention entity with embedded user
+      const entities = msg.entities || [];
+      const textMention = entities.find(e => e.type === 'text_mention' && e.user);
+      if (textMention && textMention.user) {
+        targetUserId = textMention.user.id;
+        targetLabel = getUsernameLabel(textMention.user);
+        await ensureUser(chatId, textMention.user);
+      }
+      // Fallback: username string like @name -> look up from DB cache
+      if (!targetUserId && targetRef.startsWith('@')) {
+        const u = await getUserByUsername(chatId, targetRef);
+        if (u) {
+          targetUserId = Number(u.user_id);
+          targetLabel = getUsernameLabel({ id: u.user_id, username: u.username, first_name: u.first_name });
+        }
+      }
+    }
+    if (!targetUserId) {
+      await bot.sendMessage(chatId, 'Could not identify the target user. Reply to a user or mention someone I know.');
+      return;
+    }
+    const updated = await addLength(chatId, targetUserId, amount);
+    const sign = amount >= 0 ? '+' : '';
+    await bot.sendMessage(chatId, `Awarded ${sign}${amount}cm to ${targetLabel}. New length: ${updated.length_cm}cm.`);
+  } catch (err) {
+    console.error('give error', err);
+    await bot.sendMessage(chatId, 'Failed to process /give.');
+  }
+});
+
+// /top — top 10 by length for this group
+bot.onText(/^\/top(@\w+)?\b/i, async (msg) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  const user = msg.from;
+  await ensureUser(chatId, user);
+  try {
+    const top = await getTopUsers(chatId, 10);
+    if (!top || top.length === 0) {
+      await bot.sendMessage(chatId, 'No members found.');
+      return;
+    }
+    const lines = top.map((u, idx) => {
+      const label = getUsernameLabel({ id: u.user_id, username: u.username, first_name: u.first_name });
+      return `${idx + 1}. ${label} — ${u.length_cm}cm`;
+    });
+    await bot.sendMessage(chatId, `Top 10 dicks:\n${lines.join('\n')}`);
+  } catch (err) {
+    console.error('top error', err);
+    await bot.sendMessage(chatId, 'Could not fetch leaderboard.');
   }
 });
 
@@ -88,12 +188,11 @@ bot.onText(/^\/attack(@\w+)?(?:\s+(\d+))?/i, async (msg, match) => {
     }
     const existing = await getOpenChallengeByAttacker(chatId, userId);
     if (existing) {
-      await bot.sendMessage(chatId, 'You already have an open challenge.');
-      return;
+      await cancelOpenChallengesByAttacker(chatId, userId);
     }
     const message = await bot.sendMessage(
       chatId,
-      `${getUsernameLabel(user)} challenges anyone to a Sword Fight for ${bet}cm!\nTap "En Guard" to accept.`,
+      `${getUsernameLabel(user)} challenges the group to a "Sword" fight for ${bet}cm!\nTap "En Guard" to accept.`,
       {
         reply_markup: {
           inline_keyboard: [[{ text: 'En Guard', callback_data: `accept:${bet}` }]]
@@ -122,10 +221,35 @@ bot.onText(/^\/stats(@\w+)?\b/i, async (msg) => {
     }
     const total = Number(me.wins) + Number(me.losses);
     const pct = total > 0 ? Math.round((Number(me.wins) / total) * 100) : 0;
-    await bot.sendMessage(chatId, `${getUsernameLabel(user)}\nLength: ${me.length_cm}cm\nW/L: ${me.wins}/${me.losses} (${pct}%)`);
+    const danger = Number(me.length_cm) > 100
+      ? `\nWarning: You are in the danger zone. /grow has a 15% chance to snap your dick (-10% to -50%).`
+      : '';
+    await bot.sendMessage(chatId, `${getUsernameLabel(user)}\nLength: ${me.length_cm}cm\nW/L: ${me.wins}/${me.losses} (${pct}%)${danger}`);
   } catch (err) {
     console.error('stats error', err);
     await bot.sendMessage(chatId, 'Could not load stats.');
+  }
+});
+
+// /phallusoftheday
+bot.onText(/^\/phallusoftheday(@\w+)?\b/i, async (msg) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  const user = msg.from;
+  await ensureUser(chatId, user);
+  const utcNow = getUtcDate();
+  try {
+    const potd = await selectOrCreatePotd(chatId, utcNow);
+    if (!potd) {
+      await bot.sendMessage(chatId, 'No registered members found to choose from.');
+      return;
+    }
+    const dateStr = utcNow.toISOString().slice(0, 10);
+    const label = getUsernameLabel({ id: potd.user_id, username: potd.username, first_name: potd.first_name });
+    await bot.sendMessage(chatId, `Dick of the day goes to: ${label} — ${potd.length_cm}cm`);
+  } catch (err) {
+    console.error('potd error', err);
+    await bot.sendMessage(chatId, 'Could not determine Phallus of the Day.');
   }
 });
 
@@ -147,7 +271,7 @@ bot.on('callback_query', async (query) => {
   try {
     const challenge = await getOpenChallengeByMessageId(chatId, msg.message_id);
     if (!challenge) {
-      if (query.id) await bot.answerCallbackQuery(query.id, { text: 'No open challenge found.' });
+      if (query.id) await bot.answerCallbackQuery(query.id, { text: 'This challenge has been cancelled.' });
       return;
     }
     const outcome = await resolveChallengeTransaction(challenge.id, chatId, fromId);
@@ -165,7 +289,7 @@ bot.on('callback_query', async (query) => {
     const { result } = outcome;
     const winnerMention = result.winnerId === Number(result.attacker.user_id) ? getUsernameLabel(result.attacker) : getUsernameLabel(result.acceptor);
     const loserMention = result.winnerId === Number(result.attacker.user_id) ? getUsernameLabel(result.acceptor) : getUsernameLabel(result.attacker);
-    const baseText = `Sword Fight resolved for ${result.betCm}cm!\nWinner: ${winnerMention}\nLoser: ${loserMention}`;
+    const baseText = `They swung their dicks for ${result.betCm}cm!\nWinner: ${winnerMention}\nLoser: ${loserMention}`;
     try {
       await bot.editMessageText(baseText, { chat_id: chatId, message_id: msg.message_id });
     } catch {
@@ -180,26 +304,17 @@ bot.on('callback_query', async (query) => {
   }
 });
 
-// Startup: webhook for Heroku or polling locally
+// Startup: always polling; also bind an HTTP port for Heroku health
 async function start() {
-  if (useWebhook) {
-    const app = express();
-    app.use(express.json());
-    const secret = crypto.createHash('sha256').update(token).digest('hex').slice(0, 32);
-    const path = `/bot/${secret}`;
-    app.post(path, (req, res) => {
-      bot.processUpdate(req.body);
-      res.sendStatus(200);
-    });
-    const url = `${process.env.WEBHOOK_DOMAIN}${path}`;
-    await bot.setWebHook(url);
-    app.get('/', (_req, res) => res.send('Phallic Fury bot is running.'));
-    app.listen(Number(process.env.PORT), () => {
-      console.log(`Webhook server listening on ${process.env.PORT}`);
-    });
-  } else {
-    console.log('Bot started with long polling.');
-  }
+  // Start long polling
+  console.log('Bot started with long polling.');
+  // Bind a simple HTTP server (Heroku expects PORT even for worker sometimes; safe to always bind)
+  const app = express();
+  app.get('/', (_req, res) => res.send('Phallic Fury bot is running.'));
+  const port = Number(process.env.PORT) || 3000;
+  app.listen(port, () => {
+    console.log(`HTTP server listening on ${port}`);
+  });
   process.once('SIGINT', () => bot.stopPolling());
   process.once('SIGTERM', () => bot.stopPolling());
 }

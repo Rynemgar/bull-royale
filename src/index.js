@@ -214,10 +214,10 @@ bot.onText(/^\/attack(@\w+)?(?:\s+(\d+))?/i, async (msg, match) => {
     }
     const message = await sendWithGrow(
       chatId,
-      `${getUsernameLabel(user)} challenges the group to a "Sword" fight for ${bet}cm!\nTap "En Guard" to accept.`,
+      `${getUsernameLabel(user)} challenges the group to a Cock fight for ${bet}cm!\nAccept the challenge and swing your dick!`,
       {
         reply_markup: {
-          inline_keyboard: [[{ text: 'En Guard', callback_data: `accept:${bet}` }]]
+          inline_keyboard: [[{ text: 'Accept Cock Fight', callback_data: `accept:${bet}` }]]
         }
       }
     );

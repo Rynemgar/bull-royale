@@ -88,11 +88,11 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const pctText = Math.round(pct * 100);
       await bot.sendMessage(chatId, `${getUsernameLabel(user)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`);
     } else {
-      // 75% chance positive (1..15), 25% chance negative (-1..-5), never 0
+      // 90% chance positive (1..15), 10% chance negative (-1..-5), never 0
       const mustBePositive = current && Number(current.length_cm) === 0;
       const delta = mustBePositive
         ? (1 + Math.floor(Math.random() * 15))
-        : ((Math.random() < 0.75)
+        : ((Math.random() < 0.90)
           ? (1 + Math.floor(Math.random() * 15))
           : (-1 - Math.floor(Math.random() * 5)));
       const updated = await applyGrowth(chatId, userId, delta, utcNow);
@@ -320,7 +320,7 @@ bot.on('callback_query', async (query) => {
         const mustBePositive = current && Number(current.length_cm) === 0;
         const delta = mustBePositive
           ? (1 + Math.floor(Math.random() * 15))
-          : ((Math.random() < 0.75)
+          : ((Math.random() < 0.90)
             ? (1 + Math.floor(Math.random() * 15))
             : (-1 - Math.floor(Math.random() * 5)));
         const updated = await applyGrowth(chatId, fromId, delta, utcNow);
@@ -362,7 +362,14 @@ bot.on('callback_query', async (query) => {
     const { result } = outcome;
     const winnerMention = result.winnerId === Number(result.attacker.user_id) ? getUsernameLabel(result.attacker) : getUsernameLabel(result.acceptor);
     const loserMention = result.winnerId === Number(result.attacker.user_id) ? getUsernameLabel(result.acceptor) : getUsernameLabel(result.attacker);
-    const baseText = `They swung their dicks for ${result.betCm}cm!\nWinner: ${winnerMention}\nLoser: ${loserMention}`;
+    // Fetch updated sizes after transfer
+    const updatedWinner = await getUser(chatId, result.winnerId);
+    const updatedLoser = await getUser(chatId, result.loserId);
+    const loserLoss = result.betCm;
+    const baseText = `${winnerMention} took ${loserLoss}cm of ${loserMention}'s dick.\n` +
+      `Their new sizes are:\n` +
+      `${winnerMention}: ${updatedWinner?.length_cm ?? '??'}cm\n` +
+      `${loserMention}: ${updatedLoser?.length_cm ?? '??'}cm`;
     try {
       await bot.editMessageText(baseText, { chat_id: chatId, message_id: msg.message_id });
     } catch {

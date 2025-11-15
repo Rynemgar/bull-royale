@@ -40,6 +40,11 @@ function getUsernameLabel(from) {
   return `${from.id}`;
 }
 
+const FOOTER_HTML = `\n\nPhallic Fury is brought to you by $<a href="https://t.me/rippledickcto">RIPPLEDICK</a>`;
+function addFooter(text) {
+  return `${text}${FOOTER_HTML}`;
+}
+
 function withGrowButton(options) {
   const existing = options && options.reply_markup && Array.isArray(options.reply_markup.inline_keyboard)
     ? options.reply_markup.inline_keyboard.slice()
@@ -47,6 +52,7 @@ function withGrowButton(options) {
   const inline_keyboard = existing.concat([[{ text: 'Grow now', callback_data: 'grow_now' }]]);
   return {
     ...(options || {}),
+    parse_mode: 'HTML',
     reply_markup: {
       ...(options && options.reply_markup ? options.reply_markup : {}),
       inline_keyboard
@@ -55,7 +61,12 @@ function withGrowButton(options) {
 }
 
 function sendWithGrow(chatId, text, options) {
-  return bot.sendMessage(chatId, text, withGrowButton(options));
+  return bot.sendMessage(chatId, addFooter(text), withGrowButton(options));
+}
+
+function sendWithFooter(chatId, text, options) {
+  const opts = { ...(options || {}), parse_mode: 'HTML' };
+  return bot.sendMessage(chatId, addFooter(text), opts);
 }
 await initSchema();
 const bot = new TelegramBot(token, { polling: true });
@@ -107,7 +118,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const ms = nextMidnightUtc.getTime() - utcNow.getTime();
       const hours = Math.floor(ms / 3600000);
       const minutes = Math.floor((ms % 3600000) / 60000);
-      await bot.sendMessage(chatId, `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).`);
+      await sendWithFooter(chatId, `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).`);
       return;
     }
     // If already over 100cm, 15% chance to snap and lose 10–50% total
@@ -117,7 +128,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const loss = Math.max(1, Math.floor(Number(current.length_cm) * pct));
       const updated = await applyGrowth(chatId, userId, -loss, utcNow);
       const pctText = Math.round(pct * 100);
-      await bot.sendMessage(chatId, `${getUsernameLabel(user)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`);
+      await sendWithFooter(chatId, `${getUsernameLabel(user)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`);
     } else {
       // 90% chance positive (1..15), 10% chance negative (-1..-5), never 0
       const mustBePositive = current && Number(current.length_cm) === 0;
@@ -128,11 +139,11 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
           : (-1 - Math.floor(Math.random() * 5)));
       const updated = await applyGrowth(chatId, userId, delta, utcNow);
       const sign = delta >= 0 ? '+' : '';
-      await bot.sendMessage(chatId, `${getUsernameLabel(user)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`);
+      await sendWithFooter(chatId, `${getUsernameLabel(user)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`);
     }
   } catch (err) {
     console.error('grow error', err);
-    await bot.sendMessage(chatId, 'Something went wrong processing /grow.');
+    await sendWithFooter(chatId, 'Something went wrong processing /grow.');
   }
 });
 
@@ -366,7 +377,7 @@ bot.on('callback_query', async (query) => {
         const ms = nextMidnightUtc.getTime() - utcNow.getTime();
         const hours = Math.floor(ms / 3600000);
         const minutes = Math.floor((ms % 3600000) / 60000);
-        await bot.sendMessage(chatId, `${getUsernameLabel(from)} — You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).`);
+        await sendWithFooter(chatId, `${getUsernameLabel(from)} — You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).`);
         if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Cooldown active' });
         return;
       }
@@ -376,7 +387,7 @@ bot.on('callback_query', async (query) => {
         const loss = Math.max(1, Math.floor(Number(current.length_cm) * pct));
         const updated = await applyGrowth(chatId, fromId, -loss, utcNow);
         const pctText = Math.round(pct * 100);
-        await bot.sendMessage(chatId, `${getUsernameLabel(from)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`);
+        await sendWithFooter(chatId, `${getUsernameLabel(from)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`);
       } else {
         const mustBePositive = current && Number(current.length_cm) === 0;
         const delta = mustBePositive
@@ -386,7 +397,7 @@ bot.on('callback_query', async (query) => {
             : (-1 - Math.floor(Math.random() * 5)));
         const updated = await applyGrowth(chatId, fromId, delta, utcNow);
         const sign = delta >= 0 ? '+' : '';
-        await bot.sendMessage(chatId, `${getUsernameLabel(from)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`);
+        await sendWithFooter(chatId, `${getUsernameLabel(from)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`);
       }
       if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Grown!' });
     } catch (err) {
@@ -432,9 +443,9 @@ bot.on('callback_query', async (query) => {
       `${winnerMention}: ${updatedWinner?.length_cm ?? '??'}cm\n` +
       `${loserMention}: ${updatedLoser?.length_cm ?? '??'}cm`;
     try {
-      await bot.editMessageText(baseText, { chat_id: chatId, message_id: msg.message_id });
+      await bot.editMessageText(addFooter(baseText), { chat_id: chatId, message_id: msg.message_id, parse_mode: 'HTML' });
     } catch {
-      await bot.sendMessage(chatId, baseText);
+      await sendWithFooter(chatId, baseText);
     }
     if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Duel complete!' });
   } catch (err) {

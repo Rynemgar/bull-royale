@@ -53,6 +53,7 @@ function withGrowButton(options) {
   return {
     ...(options || {}),
     parse_mode: 'HTML',
+    disable_web_page_preview: true,
     reply_markup: {
       ...(options && options.reply_markup ? options.reply_markup : {}),
       inline_keyboard
@@ -65,7 +66,7 @@ function sendWithGrow(chatId, text, options) {
 }
 
 function sendWithFooter(chatId, text, options) {
-  const opts = { ...(options || {}), parse_mode: 'HTML' };
+  const opts = { ...(options || {}), parse_mode: 'HTML', disable_web_page_preview: true };
   return bot.sendMessage(chatId, addFooter(text), opts);
 }
 await initSchema();
@@ -443,7 +444,7 @@ bot.on('callback_query', async (query) => {
       `${winnerMention}: ${updatedWinner?.length_cm ?? '??'}cm\n` +
       `${loserMention}: ${updatedLoser?.length_cm ?? '??'}cm`;
     try {
-      await bot.editMessageText(addFooter(baseText), { chat_id: chatId, message_id: msg.message_id, parse_mode: 'HTML' });
+      await bot.editMessageText(addFooter(baseText), { chat_id: chatId, message_id: msg.message_id, parse_mode: 'HTML', disable_web_page_preview: true });
     } catch {
       await sendWithFooter(chatId, baseText);
     }

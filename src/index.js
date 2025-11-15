@@ -59,6 +59,37 @@ function sendWithGrow(chatId, text, options) {
 }
 await initSchema();
 const bot = new TelegramBot(token, { polling: true });
+const ALERT_DESTINATION = process.env.ALERT_DESTINATION || '@rippledickcto';
+const BOT_INFO = await bot.getMe();
+const BOT_ID = BOT_INFO.id;
+
+async function notifyBotAddedToGroup(chat, actor) {
+  try {
+    const title = chat.title || '(no title)';
+    const type = chat.type || 'unknown';
+    const actorLabel = actor ? getUsernameLabel(actor) : 'unknown';
+    // Try to build an invite link if possible
+    let invite = '';
+    if (chat.username) {
+      invite = `Invite: https://t.me/${chat.username}\n`;
+    } else {
+      try {
+        const exported = await bot.exportChatInviteLink(chat.id);
+        if (exported) {
+          invite = `Invite: ${exported}\n`;
+        }
+      } catch {}
+    }
+    const text =
+      `Phallic Fury bot added to a new ${type}\n` +
+      `Title: ${title}\n` +
+      invite +
+      `Looks like more dicks are about to get fondled.\n`
+    await bot.sendMessage(ALERT_DESTINATION, text);
+  } catch (e) {
+    console.error('Failed to notify new group join', e);
+  }
+}
 
 // /grow
 bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
@@ -273,6 +304,36 @@ bot.onText(/^\/phallusoftheday(@\w+)?\b/i, async (msg) => {
   } catch (err) {
     console.error('potd error', err);
     await sendWithGrow(chatId, 'Could not determine Phallus of the Day.');
+  }
+});
+
+// Detect when bot is added via member join message
+bot.on('message', async (msg) => {
+  try {
+    if (!msg.chat) return;
+    const newMembers = msg.new_chat_members;
+    if (!newMembers || newMembers.length === 0) return;
+    const botWasAdded = newMembers.some(m => m && m.id === BOT_ID);
+    if (!botWasAdded) return;
+    await notifyBotAddedToGroup(msg.chat, msg.from);
+  } catch (e) {
+    console.error('message new_chat_members handler error', e);
+  }
+});
+
+// Detect when bot is added via chat member status change
+bot.on('my_chat_member', async (update) => {
+  try {
+    const chat = update.chat;
+    if (!chat) return;
+    const oldStatus = update.old_chat_member?.status;
+    const newStatus = update.new_chat_member?.status;
+    const addedNow = (oldStatus === 'left' || oldStatus === 'kicked') &&
+      (newStatus === 'member' || newStatus === 'administrator');
+    if (!addedNow) return;
+    await notifyBotAddedToGroup(chat, update.from);
+  } catch (e) {
+    console.error('my_chat_member handler error', e);
   }
 });
 

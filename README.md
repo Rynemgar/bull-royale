@@ -7,6 +7,7 @@ A Telegram group game where members can grow their "length", challenge others to
 - `/grow` once per day (UTC reset at midnight): random delta from -5cm to +10cm.
 - `/attack <bet_cm>`: posts a challenge with an "En Guard" button. First to accept fights the challenger; winner takes the bet from the loser.
 - `/stats`: shows your length and win/loss percentage.
+- `/PhallusOfTheDay`: selects a random member as "Dick of the day" and shows them until midnight UTC.
 - Stats are isolated per Telegram group.
 
 ## Requirements

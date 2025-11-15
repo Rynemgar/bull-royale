@@ -238,7 +238,7 @@ bot.onText(/^\/attack(@\w+)?(?:\s+(\d+))?/i, async (msg, match) => {
   await ensureUser(chatId, user);
   const bet = parseInt(match?.[2] || '', 10);
   if (!bet || isNaN(bet) || bet <= 0) {
-    await sendWithGrow(chatId, 'Usage: /attack <bet_cm> (positive integer)');
+    await sendWithGrow(chatId, 'Usage: /attack &lt;bet_cm&gt; (positive integer)');
     return;
   }
   try {

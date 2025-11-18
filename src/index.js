@@ -153,21 +153,11 @@ bot.onText(/^\/give(@\w+)?\s+(.+?)\s+(-?\d+)\b/i, async (msg, match) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
   const from = msg.from;
+  await ensureUser(chatId, from);
   const targetRef = (match?.[2] || '').trim();
   const amount = parseInt(match?.[3] || '0', 10);
-  if (!Number.isFinite(amount) || amount === 0) {
-    await sendWithGrow(chatId, 'Amount must be a non-zero integer.');
-    return;
-  }
   try {
-    if (!ADMIN_USER_ID) {
-      await sendWithGrow(chatId, 'ADMIN_USER_ID is not configured.');
-      return;
-    }
-    if (from.id !== ADMIN_USER_ID) {
-      await sendWithGrow(chatId, 'You are not allowed to use /give.');
-      return;
-    }
+    const isAdmin = from.id === ADMIN_USER_ID;
     let targetUserId = null;
     let targetLabel = null;
     // Prefer reply target if present
@@ -197,9 +187,38 @@ bot.onText(/^\/give(@\w+)?\s+(.+?)\s+(-?\d+)\b/i, async (msg, match) => {
       await sendWithGrow(chatId, 'Could not identify the target user. Reply to a user or mention someone I know.');
       return;
     }
-    const updated = await addLength(chatId, targetUserId, amount);
-    const sign = amount >= 0 ? '+' : '';
-    await sendWithGrow(chatId, `Awarded ${sign}${amount}cm to ${targetLabel}. New length: ${updated.length_cm}cm.`);
+    if (!isAdmin) {
+      // Non-admin: transfer from caller to target. Amount must be positive.
+      if (!Number.isFinite(amount) || amount <= 0) {
+        await sendWithGrow(chatId, 'Amount must be a positive integer.');
+        return;
+      }
+      if (targetUserId === from.id) {
+        await sendWithGrow(chatId, 'You cannot transfer length to yourself.');
+        return;
+      }
+      const me = await getUser(chatId, from.id);
+      if (!me || Number(me.length_cm) < amount) {
+        await sendWithGrow(chatId, `Insufficient length. You have ${me?.length_cm ?? 0}cm but tried to give ${amount}cm.`);
+        return;
+      }
+      // Perform transfer
+      await addLength(chatId, from.id, -amount);
+      const updatedTarget = await addLength(chatId, targetUserId, amount);
+      const updatedMe = await getUser(chatId, from.id);
+      const fromLabel = getUsernameLabel(from);
+      await sendWithGrow(chatId, `Transferred ${amount}cm from ${fromLabel} to ${targetLabel}.\n${fromLabel}: ${updatedMe.length_cm}cm\n${targetLabel}: ${updatedTarget.length_cm}cm`);
+      return;
+    } else {
+      // Admin behavior: award or deduct to target; amount can be negative.
+      if (!Number.isFinite(amount) || amount === 0) {
+        await sendWithGrow(chatId, 'Amount must be a non-zero integer.');
+        return;
+      }
+      const updated = await addLength(chatId, targetUserId, amount);
+      const sign = amount >= 0 ? '+' : '';
+      await sendWithGrow(chatId, `Awarded ${sign}${amount}cm to ${targetLabel}. New length: ${updated.length_cm}cm.`);
+    }
   } catch (err) {
     console.error('give error', err);
     await sendWithGrow(chatId, 'Failed to process /give.');

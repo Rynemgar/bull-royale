@@ -543,7 +543,7 @@ bot.on('callback_query', async (query) => {
         already_resolved: 'Challenge already resolved.',
         self_accept: 'You cannot accept your own challenge.',
         attacker_insufficient: 'Challenger lacks enough cm.',
-        acceptor_insufficient: 'Acceptor lacks enough cm.',
+        acceptor_insufficient: 'Your dick is too small.',
         missing_user: 'One of the fighters is not registered.'
       }[outcome.reason] || 'Unable to accept challenge.';
       if (query.id) await bot.answerCallbackQuery(query.id, { text: reasonText, show_alert: false });

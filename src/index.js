@@ -202,12 +202,20 @@ bot.onText(/^\/give(@\w+)?\s+(.+?)\s+(-?\d+)\b/i, async (msg, match) => {
         await sendWithGrow(chatId, `Insufficient length. You have ${me?.length_cm ?? 0}cm but tried to give ${amount}cm.`);
         return;
       }
-      // Perform transfer
-      await addLength(chatId, from.id, -amount);
-      const updatedTarget = await addLength(chatId, targetUserId, amount);
-      const updatedMe = await getUser(chatId, from.id);
+      // Ask for confirmation via inline buttons
       const fromLabel = getUsernameLabel(from);
-      await sendWithGrow(chatId, `Transferred ${amount}cm from ${fromLabel} to ${targetLabel}.\n${fromLabel}: ${updatedMe.length_cm}cm\n${targetLabel}: ${updatedTarget.length_cm}cm`);
+      await sendWithGrow(
+        chatId,
+        `${fromLabel}, are you sure you want to give ${amount}cm of your dick to ${targetLabel}?`,
+        {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: 'Confirm transfer', callback_data: `giveconf:${from.id}:${targetUserId}:${amount}` },
+              { text: 'Cancel', callback_data: `givecancel:${from.id}` }
+            ]]
+          }
+        }
+      );
       return;
     } else {
       // Admin behavior: award or deduct to target; amount can be negative.
@@ -422,6 +430,96 @@ bot.on('callback_query', async (query) => {
       if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Grown!' });
     } catch (err) {
       console.error('grow_now error', err);
+      if (query.id) {
+        try { await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' }); } catch {}
+      }
+    }
+    return;
+  }
+  // Handle give confirmation
+  if (data.startsWith('giveconf:')) {
+    try {
+      const parts = data.split(':');
+      // giveconf:<requesterId>:<targetId>:<amount>
+      const requesterId = Number(parts[1]);
+      const targetId = Number(parts[2]);
+      const amount = Number(parts[3]);
+      if (fromId !== requesterId) {
+        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Only the requester can confirm this transfer.', show_alert: true });
+        return;
+      }
+      await ensureUser(chatId, from);
+      const me = await getUser(chatId, requesterId);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        await bot.answerCallbackQuery(query.id, { text: 'Invalid amount.' });
+        return;
+      }
+      if (!me || Number(me.length_cm) < amount) {
+        const fromLabel = getUsernameLabel(from);
+        const failText = `Transfer failed: insufficient length.\n${fromLabel} has ${me?.length_cm ?? 0}cm but tried to give ${amount}cm.`;
+        try {
+          await bot.editMessageText(addFooter(failText), {
+            chat_id: chatId,
+            message_id: msg.message_id,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true
+          });
+        } catch {
+          await sendWithFooter(chatId, failText);
+        }
+        if (query.id) await bot.answerCallbackQuery(query.id);
+        return;
+      }
+      // Perform transfer
+      await addLength(chatId, requesterId, -amount);
+      const updatedTarget = await addLength(chatId, targetId, amount);
+      const updatedMe = await getUser(chatId, requesterId);
+      const fromLabel = getUsernameLabel(from);
+      const targetUser = await getUser(chatId, targetId);
+      const targetLabel = getUsernameLabel({ id: targetId, username: targetUser?.username, first_name: targetUser?.first_name });
+      const text = `Transferred ${amount}cm from ${fromLabel} to ${targetLabel}.\n${fromLabel}: ${updatedMe.length_cm}cm\n${targetLabel}: ${updatedTarget.length_cm}cm`;
+      try {
+        await bot.editMessageText(addFooter(text), {
+          chat_id: chatId,
+          message_id: msg.message_id,
+          parse_mode: 'HTML',
+          disable_web_page_preview: true
+        });
+      } catch {
+        await sendWithFooter(chatId, text);
+      }
+      if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Transfer complete!' });
+    } catch (err) {
+      console.error('giveconf error', err);
+      if (query.id) {
+        try { await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' }); } catch {}
+      }
+    }
+    return;
+  }
+  if (data.startsWith('givecancel:')) {
+    try {
+      const parts = data.split(':');
+      const requesterId = Number(parts[1]);
+      if (fromId !== requesterId) {
+        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Only the requester can cancel.', show_alert: true });
+        return;
+      }
+      const fromLabel = getUsernameLabel(from);
+      const text = `${fromLabel} cancelled the transfer.`;
+      try {
+        await bot.editMessageText(addFooter(text), {
+          chat_id: chatId,
+          message_id: msg.message_id,
+          parse_mode: 'HTML',
+          disable_web_page_preview: true
+        });
+      } catch {
+        await sendWithFooter(chatId, text);
+      }
+      if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Cancelled' });
+    } catch (err) {
+      console.error('givecancel error', err);
       if (query.id) {
         try { await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' }); } catch {}
       }

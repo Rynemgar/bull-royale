@@ -298,25 +298,47 @@ bot.onText(/^\/attack(@\w+)?(?:\s+(\d+))?/i, async (msg, match) => {
   }
 });
 
-// /stats
-bot.onText(/^\/stats(@\w+)?\b/i, async (msg) => {
+// /stats (optionally with @username to view others)
+bot.onText(/^\/stats(@\w+)?(?:\s+(.+))?/i, async (msg, match) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
   const user = msg.from;
   const userId = user.id;
   await ensureUser(chatId, user);
   try {
-    const me = await getUser(chatId, userId);
-    if (!me) {
+    const targetRef = (match?.[2] || '').trim();
+    let targetUserId = userId;
+    let targetRow = null;
+    // Prefer text_mention entity if present
+    if (targetRef) {
+      const entities = msg.entities || [];
+      const tm = entities.find(e => e.type === 'text_mention' && e.user);
+      if (tm && tm.user) {
+        targetUserId = tm.user.id;
+        await ensureUser(chatId, tm.user);
+      } else if (targetRef.startsWith('@')) {
+        const u = await getUserByUsername(chatId, targetRef);
+        if (u) {
+          targetUserId = Number(u.user_id);
+          targetRow = u;
+        } else {
+          await sendWithGrow(chatId, `I don't have any stats for ${targetRef}.`);
+          return;
+        }
+      }
+    }
+    const person = targetRow || (await getUser(chatId, targetUserId));
+    if (!person) {
       await sendWithGrow(chatId, 'No stats yet. Use /grow to begin.');
       return;
     }
-    const total = Number(me.wins) + Number(me.losses);
-    const pct = total > 0 ? Math.round((Number(me.wins) / total) * 100) : 0;
-    const danger = Number(me.length_cm) > 100
+    const total = Number(person.wins) + Number(person.losses);
+    const pct = total > 0 ? Math.round((Number(person.wins) / total) * 100) : 0;
+    const danger = Number(person.length_cm) > 100
       ? `\nWarning: You are in the danger zone. /grow has a 15% chance to snap your dick (-10% to -50%).`
       : '';
-    const text = `${getUsernameLabel(user)}\nLength: ${me.length_cm}cm\nW/L: ${me.wins}/${me.losses} (${pct}%)${danger}`;
+    const label = getUsernameLabel({ id: person.user_id, username: person.username, first_name: person.first_name });
+    const text = `${label}\nLength: ${person.length_cm}cm\nW/L: ${person.wins}/${person.losses} (${pct}%)${danger}`;
     await sendWithGrow(chatId, text);
   } catch (err) {
     console.error('stats error', err);

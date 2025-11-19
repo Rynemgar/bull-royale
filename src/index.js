@@ -40,7 +40,7 @@ function getUsernameLabel(from) {
   return `${from.id}`;
 }
 
-const FOOTER_HTML = `\n\nPhallic Fury is brought to you by $<a href="https://t.me/rippledickcto">RIPPLEDICK</a>`;
+const FOOTER_HTML = `\n\n$<a href="https://t.me/rippledickcto">RIPPLEDICK</a> - Powered by Phallic Fury`;
 function addFooter(text) {
   return `${text}${FOOTER_HTML}`;
 }

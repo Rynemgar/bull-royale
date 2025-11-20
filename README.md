@@ -8,7 +8,7 @@ A Telegram group game where members can grow their "length", challenge others to
 - `/attack <bet_cm>`: posts a challenge with an "En Guard" button. First to accept fights the challenger; winner takes the bet from the loser.
 - `/stats`: shows your length and win/loss percentage.
 - `/PhallusOfTheDay`: selects a random member as "Dick of the day" and shows them until midnight UTC.
-- `/wank`: shrink your length by a random 10–90%. Wank carefully.
+- `/wank`: 10% chance to swell +10%; otherwise shrink by a random 10–90%. Wank carefully.
 - Stats are isolated per Telegram group.
 
 ## Requirements

@@ -161,11 +161,19 @@ bot.onText(/^\/wank(@\w+)?\b/i, async (msg) => {
       await sendWithGrow(chatId, `${getUsernameLabel(user)} tried to have a cheeky wank, but there's nothing left to lose.`);
       return;
     }
-    const pct = 0.10 + Math.random() * 0.80; // 10%..90%
-    const loss = Math.max(1, Math.floor(currLen * pct));
-    const updated = await addLength(chatId, user.id, -loss);
-    const pctText = Math.round(pct * 100);
-    await sendWithGrow(chatId, `${getUsernameLabel(user)} had a wank and lost ${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm. Wank carefully!`);
+    // 10% chance to swell +10%, otherwise shrink 10–90%
+    if (Math.random() < 0.10) {
+      const gainPct = 0.10; // 10%
+      const gain = Math.max(1, Math.floor(currLen * gainPct));
+      const updated = await addLength(chatId, user.id, gain);
+      await sendWithGrow(chatId, `${getUsernameLabel(user)} had a wank and it swelled! +${gain}cm (10%). Current length: ${updated.length_cm}cm.`);
+    } else {
+      const pct = 0.10 + Math.random() * 0.80; // 10%..90%
+      const loss = Math.max(1, Math.floor(currLen * pct));
+      const updated = await addLength(chatId, user.id, -loss);
+      const pctText = Math.round(pct * 100);
+      await sendWithGrow(chatId, `${getUsernameLabel(user)} had a wank and lost ${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm. Wank carefully!`);
+    }
   } catch (err) {
     console.error('wank error', err);
     await sendWithGrow(chatId, 'Could not process /wank.');

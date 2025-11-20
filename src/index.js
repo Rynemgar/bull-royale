@@ -148,6 +148,30 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
   }
 });
 
+// /wank — randomly shrink 10–90% of current length
+bot.onText(/^\/wank(@\w+)?\b/i, async (msg) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  const user = msg.from;
+  await ensureUser(chatId, user);
+  try {
+    const current = await getUser(chatId, user.id);
+    const currLen = Number(current?.length_cm ?? 0);
+    if (!current || currLen <= 0) {
+      await sendWithGrow(chatId, `${getUsernameLabel(user)} tried to have a cheeky wank, but there's nothing left to lose.`);
+      return;
+    }
+    const pct = 0.10 + Math.random() * 0.80; // 10%..90%
+    const loss = Math.max(1, Math.floor(currLen * pct));
+    const updated = await addLength(chatId, user.id, -loss);
+    const pctText = Math.round(pct * 100);
+    await sendWithGrow(chatId, `${getUsernameLabel(user)} had a wank and lost ${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm. Wank carefully!`);
+  } catch (err) {
+    console.error('wank error', err);
+    await sendWithGrow(chatId, 'Could not process /wank.');
+  }
+});
+
 // /give @user <number> — admin only, group-scoped
 bot.onText(/^\/give(@\w+)?\s+(.+?)\s+(-?\d+)\b/i, async (msg, match) => {
   if (!msg.chat || !msg.from) return;
@@ -335,7 +359,7 @@ bot.onText(/^\/stats(@\w+)?(?:\s+(.+))?/i, async (msg, match) => {
     const total = Number(person.wins) + Number(person.losses);
     const pct = total > 0 ? Math.round((Number(person.wins) / total) * 100) : 0;
     const danger = Number(person.length_cm) > 100
-      ? `\nWarning: You are in the danger zone. /grow has a 15% chance to snap your dick (-10% to -50%).`
+      ? `\nWarning: You are in the danger zone. /grow has a 30% chance to snap your dick (-10% to -50%).`
       : '';
     const label = getUsernameLabel({ id: person.user_id, username: person.username, first_name: person.first_name });
     const text = `${label}\nLength: ${person.length_cm}cm\nW/L: ${person.wins}/${person.losses} (${pct}%)${danger}`;
@@ -432,7 +456,7 @@ bot.on('callback_query', async (query) => {
         return;
       }
       const current = await getUser(chatId, fromId);
-      if (current && Number(current.length_cm) > 100 && Math.random() < 0.15) {
+      if (current && Number(current.length_cm) > 100 && Math.random() < 0.30) {
         const pct = 0.10 + Math.random() * 0.40;
         const loss = Math.max(1, Math.floor(Number(current.length_cm) * pct));
         const updated = await applyGrowth(chatId, fromId, -loss, utcNow);

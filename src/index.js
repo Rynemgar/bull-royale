@@ -168,7 +168,7 @@ bot.onText(/^\/average(@\w+)?\b/i, async (msg) => {
     const text =
       `This group's average dick size is ${groupText}cm.\n` +
       (Number.isFinite(groupRank) && groupTotal > 0
-        ? `You are the ${groupRank} ranked group.\n`
+        ? `<b>Your group is ranked number ${groupRank}.</b>\n`
         : '') +
       `The overall average dick size for Phallic Fury is ${globalText}cm.\n` +
       `Collectively, you filthy degenerates are swinging baby carrots.`;

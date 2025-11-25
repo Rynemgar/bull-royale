@@ -329,4 +329,19 @@ export async function getTopUsers(chatId, limit = 10) {
   return res.rows;
 }
 
+export async function getGroupAverageLength(chatId) {
+  const res = await pool.query(
+    `select avg(length_cm) as avg from pf_users where chat_id = $1`,
+    [chatId]
+  );
+  const v = res.rows[0] && res.rows[0].avg;
+  return v === null || v === undefined ? null : Number(v);
+}
+
+export async function getGlobalAverageLength() {
+  const res = await pool.query(`select avg(length_cm) as avg from pf_users`);
+  const v = res.rows[0] && res.rows[0].avg;
+  return v === null || v === undefined ? null : Number(v);
+}
+
 

@@ -19,7 +19,9 @@ import {
   getTopUsers,
   canPressGrowButton,
   recordGrowButtonPress,
-  resolveChallengeTransaction
+  resolveChallengeTransaction,
+  getGroupAverageLength,
+  getGlobalAverageLength
 } from './db.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -145,6 +147,28 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
   } catch (err) {
     console.error('grow error', err);
     await sendWithFooter(chatId, 'Something went wrong processing /grow.');
+  }
+});
+
+// /average — show this group's average and global average
+bot.onText(/^\/average(@\w+)?\b/i, async (msg) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  const user = msg.from;
+  await ensureUser(chatId, user);
+  try {
+    const groupAvg = await getGroupAverageLength(chatId);
+    const globalAvg = await getGlobalAverageLength();
+    const groupText = Number.isFinite(groupAvg) ? groupAvg.toFixed(1) : '0.0';
+    const globalText = Number.isFinite(globalAvg) ? globalAvg.toFixed(1) : '0.0';
+    const text =
+      `This group's average dick size is ${groupText}cm.\n` +
+      `The overall average dick size for Phallic Fury is ${globalText}cm.\n` +
+      `Collectively, you filthy degenerates are swinging baby carrots.`;
+    await sendWithGrow(chatId, text);
+  } catch (err) {
+    console.error('average error', err);
+    await sendWithGrow(chatId, 'Could not calculate averages. Even math is disgusted.');
   }
 });
 

@@ -9,6 +9,7 @@ A Telegram group game where members can grow their "length", challenge others to
 - `/stats`: shows your length and win/loss percentage.
 - `/PhallusOfTheDay`: selects a random member as "Dick of the day" and shows them until midnight UTC.
 - `/wank`: 10% chance to swell +10%; otherwise shrink by a random 10–90%. Wank carefully.
+- `/average`: shows this group's average and the overall average across all groups (crudely worded).
 - Stats are isolated per Telegram group.
 
 ## Requirements

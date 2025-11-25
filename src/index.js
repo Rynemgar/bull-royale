@@ -21,7 +21,8 @@ import {
   recordGrowButtonPress,
   resolveChallengeTransaction,
   getGroupAverageLength,
-  getGlobalAverageLength
+  getGlobalAverageLength,
+  getGroupAverageAndRank
 } from './db.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -157,12 +158,18 @@ bot.onText(/^\/average(@\w+)?\b/i, async (msg) => {
   const user = msg.from;
   await ensureUser(chatId, user);
   try {
-    const groupAvg = await getGroupAverageLength(chatId);
+    const groupAvgRow = await getGroupAverageAndRank(chatId);
+    const groupAvg = groupAvgRow.avg;
+    const groupRank = groupAvgRow.rank;
+    const groupTotal = groupAvgRow.total;
     const globalAvg = await getGlobalAverageLength();
     const groupText = Number.isFinite(groupAvg) ? groupAvg.toFixed(1) : '0.0';
     const globalText = Number.isFinite(globalAvg) ? globalAvg.toFixed(1) : '0.0';
     const text =
       `This group's average dick size is ${groupText}cm.\n` +
+      (Number.isFinite(groupRank) && groupTotal > 0
+        ? `You are the ${groupRank} ranked group.\n`
+        : '') +
       `The overall average dick size for Phallic Fury is ${globalText}cm.\n` +
       `Collectively, you filthy degenerates are swinging baby carrots.`;
     await sendWithGrow(chatId, text);

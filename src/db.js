@@ -344,4 +344,36 @@ export async function getGlobalAverageLength() {
   return v === null || v === undefined ? null : Number(v);
 }
 
+export async function getGroupAverageAndRank(chatId) {
+  const res = await pool.query(
+    `
+    with per_group as (
+      select chat_id, avg(length_cm) as avg
+      from pf_users
+      group by chat_id
+    ),
+    ranked as (
+      select chat_id,
+             avg,
+             dense_rank() over (order by avg desc) as rnk,
+             count(*) over () as total_groups
+      from per_group
+    )
+    select rnk as rank, avg, total_groups
+    from ranked
+    where chat_id = $1
+    `,
+    [chatId]
+  );
+  if (res.rowCount === 0) {
+    return { avg: null, rank: null, total: 0 };
+  }
+  const row = res.rows[0];
+  return {
+    avg: row.avg === null || row.avg === undefined ? null : Number(row.avg),
+    rank: row.rank === null || row.rank === undefined ? null : Number(row.rank),
+    total: row.total_groups === null || row.total_groups === undefined ? 0 : Number(row.total_groups)
+  };
+}
+
 

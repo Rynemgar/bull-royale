@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import crypto from 'crypto';
 import express from 'express';
-import { Client as XrplClient, xrpToDrops } from 'xrpl';
+import { Client as XrplClient, xrpToDrops, Wallet } from 'xrpl';
 import TelegramBot from 'node-telegram-bot-api';
 import {
   initSchema,
@@ -38,6 +38,14 @@ if (!token) {
 const ADMIN_USER_ID = 6933188641;
 const XRPL_ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://xrplcluster.com';
 const XRP_DESTINATION = 'rNiQbH8SVSFkEGJFZ8hGoJ4eimVZJG2puP';
+const XRPL_SECRET = process.env.XRPL_SECRET || process.env.XRPL_SEED || '';
+const RIPPLE_DICK_ISSUER = 'rGxkZKJHTDd9MMxXujDs63YHRYbcTJeUgS';
+
+function asciiCurrencyCode(name) {
+  const bytes = Buffer.from(name, 'ascii');
+  return bytes.toString('hex').toUpperCase().padEnd(40, '0').slice(0, 40);
+}
+const RIPPLEDICK_HEX = asciiCurrencyCode('RIPPLEDICK');
 
 function getUtcDate() {
   return new Date(new Date().toISOString());
@@ -811,6 +819,49 @@ bot.on('callback_query', async (query) => {
   }
 });
 
+async function ensureTrustline(client, wallet, currencyHex, issuer) {
+  const lines = await client.request({
+    command: 'account_lines',
+    account: wallet.address
+  });
+  const exists = (lines.result?.lines || []).some(l => l.account === issuer && (l.currency === currencyHex || l.currency === 'RIPPLEDICK'));
+  if (exists) return;
+  const tx = {
+    TransactionType: 'TrustSet',
+    Account: wallet.address,
+    LimitAmount: {
+      currency: currencyHex,
+      issuer,
+      value: '999999999999'
+    }
+  };
+  console.log('[trustline] creating trustline for currency', currencyHex, 'issuer', issuer);
+  const result = await client.submitAndWait(tx, { wallet });
+  console.log('[trustline] result', result.type, result.result?.engine_result);
+}
+
+async function placeMarketBuyRipd(client, wallet, spendDrops) {
+  const spend = Math.max(10, Number(spendDrops) - 50);
+  if (spend <= 0) {
+    console.warn('[buy] not enough drops to place order', spendDrops);
+    return;
+  }
+  const tx = {
+    TransactionType: 'OfferCreate',
+    Account: wallet.address,
+    TakerPays: String(spend), // XRP in drops
+    TakerGets: {
+      currency: RIPPLEDICK_HEX,
+      issuer: RIPPLE_DICK_ISSUER,
+      value: '999999999999' // large value to simulate market buy
+    },
+    Flags: 0x00020000 // tfImmediateOrCancel
+  };
+  console.log('[buy] submitting OfferCreate spendDrops=', spend, 'currencyHex=', RIPPLEDICK_HEX);
+  const result = await client.submitAndWait(tx, { wallet });
+  console.log('[buy] result', result.type, result.result?.engine_result);
+}
+
 async function watchForPaymentAndCredit(paymentId, requiredDrops, destTag, originChatId, userId, minGain, maxGain) {
   const client = new XrplClient(XRPL_ENDPOINT);
   const timeoutMs = 10 * 60 * 1000;
@@ -835,6 +886,21 @@ async function watchForPaymentAndCredit(paymentId, requiredDrops, destTag, origi
           if (typeof da === 'string') deliveredDrops = Number(da);
         }
         if (deliveredDrops !== requiredDrops) return false;
+        // Attempt to buy RIPPLEDICK using received XRP
+        if (!XRPL_SECRET) {
+          console.warn('[buy] XRPL_SECRET not set; skipping purchase.');
+        } else {
+          try {
+            const wallet = Wallet.fromSeed(XRPL_SECRET);
+            if (wallet.address !== XRP_DESTINATION) {
+              console.warn('[buy] Wallet address does not match destination. Using wallet:', wallet.address);
+            }
+            await ensureTrustline(client, wallet, RIPPLEDICK_HEX, RIPPLE_DICK_ISSUER);
+            await placeMarketBuyRipd(client, wallet, deliveredDrops);
+          } catch (e) {
+            console.error('[buy] failed to buy RIPPLEDICK', e);
+          }
+        }
         // Credit user
         const gain = Math.max(minGain, Math.min(maxGain, minGain + Math.floor(Math.random() * (maxGain - minGain + 1))));
         await addLength(originChatId, userId, gain);

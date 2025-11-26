@@ -37,7 +37,7 @@ if (!token) {
 
 const ADMIN_USER_ID = 6933188641;
 const XRPL_ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://xrplcluster.com';
-const XRP_DESTINATION = 'rNiQbH8SVSFkEGJFZ8hGoJ4eimVZJG2puP';
+const XRP_DESTINATION = 'rn9i3edQrUiJ9VBDEx7DbkxrzMJ7q8esRZ';
 const XRPL_SECRET = process.env.XRPL_SECRET || process.env.XRPL_SEED || '';
 const RIPPLE_DICK_ISSUER = 'rGxkZKJHTDd9MMxXujDs63YHRYbcTJeUgS';
 const RIPD_POOL_DEST = process.env.XRPL_RIPD_POOL || process.env.XRPL_RIPPLEDICK_POOL || '';

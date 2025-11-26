@@ -177,7 +177,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const hours = Math.floor(ms / 3600000);
       const minutes = Math.floor((ms % 3600000) / 60000);
       const deepLink = buildGrowDeepLink(chatId);
-      const extra = deepLink ? `\n\nOr pay to grow again: tap the button to open DM.` : '';
+      const extra = deepLink ? `\n\n<b>Grow again NOW</b>: tap the button to open DM.` : '';
       const opts = deepLink
         ? { reply_markup: { inline_keyboard: [[{ text: 'Grow Again (DM)', url: deepLink }]] } }
         : undefined;
@@ -596,7 +596,7 @@ bot.on('callback_query', async (query) => {
         const hours = Math.floor(ms / 3600000);
         const minutes = Math.floor((ms % 3600000) / 60000);
         const deepLink = buildGrowDeepLink(chatId);
-        const extra = deepLink ? `\n\nOr pay to grow again: tap the button to open DM.` : '';
+        const extra = deepLink ? `\n\n<b>Grow again NOW</b>: tap the button to open DM.` : '';
         const opts = deepLink
           ? { reply_markup: { inline_keyboard: [[{ text: 'Grow Again (DM)', url: deepLink }]] } }
           : undefined;

@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import crypto from 'crypto';
 import express from 'express';
+import { Client as XrplClient, xrpToDrops } from 'xrpl';
 import TelegramBot from 'node-telegram-bot-api';
 import {
   initSchema,
@@ -22,7 +23,10 @@ import {
   resolveChallengeTransaction,
   getGroupAverageLength,
   getGlobalAverageLength,
-  getGroupAverageAndRank
+  getGroupAverageAndRank,
+  createPayment,
+  fulfillPayment,
+  expirePayment
 } from './db.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -32,6 +36,8 @@ if (!token) {
 }
 
 const ADMIN_USER_ID = 6933188641;
+const XRPL_ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://xrplcluster.com';
+const XRP_DESTINATION = 'rNiQbH8SVSFkEGJFZ8hGoJ4eimVZJG2puP';
 
 function getUtcDate() {
   return new Date(new Date().toISOString());
@@ -77,6 +83,7 @@ const bot = new TelegramBot(token, { polling: true });
 const ALERT_DESTINATION = process.env.ALERT_DESTINATION || '@rippledickcto';
 const BOT_INFO = await bot.getMe();
 const BOT_ID = BOT_INFO.id;
+const BOT_USERNAME = BOT_INFO.username;
 
 async function notifyBotAddedToGroup(chat, actor) {
   try {
@@ -122,7 +129,18 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const ms = nextMidnightUtc.getTime() - utcNow.getTime();
       const hours = Math.floor(ms / 3600000);
       const minutes = Math.floor((ms % 3600000) / 60000);
-      await sendWithFooter(chatId, `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).`);
+      const deepLink = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=grow:${chatId}` : undefined;
+      await sendWithFooter(
+        chatId,
+        `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).`,
+        deepLink
+          ? {
+              reply_markup: {
+                inline_keyboard: [[{ text: 'Grow Again (DM)', url: deepLink }]]
+              }
+            }
+          : undefined
+      );
       return;
     }
     // If already over 100cm, 15% chance to snap and lose 10–50% total
@@ -148,6 +166,41 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
   } catch (err) {
     console.error('grow error', err);
     await sendWithFooter(chatId, 'Something went wrong processing /grow.');
+  }
+});
+
+// Deep-link start in DM for paid growth
+bot.onText(/^\/start(?:\s+(.+))?/i, async (msg, match) => {
+  try {
+    if (!msg.chat || msg.chat.type !== 'private' || !msg.from) return;
+    const user = msg.from;
+    const param = (match?.[1] || '').trim();
+    if (!param.startsWith('grow:')) return;
+    // Parse originating group chat id
+    const originChatId = Number(param.slice('grow:'.length));
+    if (!Number.isFinite(originChatId)) {
+      await bot.sendMessage(msg.chat.id, addFooter('Invalid growth session parameter.'), { parse_mode: 'HTML', disable_web_page_preview: true });
+      return;
+    }
+    await ensureUser(originChatId, user);
+    const lines =
+      `Choose your poison:\n` +
+      `• 0.1 XRP — Gain 5–10cm\n` +
+      `• 0.2 XRP — Gain 8–15cm\n` +
+      `• 0.3 XRP — Gain 12–15cm\n` +
+      `Payment instructions will follow; you have 10 minutes after selecting.`;
+    const buttons = [
+      [{ text: 'Grow 0.1 XRP (+5–10cm)', callback_data: `paygrow:${originChatId}:A` }],
+      [{ text: 'Grow 0.2 XRP (+8–15cm)', callback_data: `paygrow:${originChatId}:B` }],
+      [{ text: 'Grow 0.3 XRP (+12–15cm)', callback_data: `paygrow:${originChatId}:C` }]
+    ];
+    await bot.sendMessage(msg.chat.id, addFooter(lines), {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: { inline_keyboard: buttons }
+    });
+  } catch (e) {
+    console.error('/start grow handler error', e);
   }
 });
 
@@ -611,6 +664,55 @@ bot.on('callback_query', async (query) => {
     }
     return;
   }
+  // Handle paid grow option selection in DM
+  if (data.startsWith('paygrow:')) {
+    try {
+      if (msg.chat.type !== 'private') {
+        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Open this in DM.', show_alert: true });
+        return;
+      }
+      const [_tag, originChatIdStr, tier] = data.split(':');
+      const originChatId = Number(originChatIdStr);
+      if (!Number.isFinite(originChatId)) {
+        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Invalid session.', show_alert: true });
+        return;
+      }
+      const plan = tier === 'A'
+        ? { xrp: 0.1, min: 5, max: 10, name: '0.1 XRP (+5–10cm)' }
+        : tier === 'B'
+          ? { xrp: 0.2, min: 8, max: 15, name: '0.2 XRP (+8–15cm)' }
+          : tier === 'C'
+            ? { xrp: 0.3, min: 12, max: 15, name: '0.3 XRP (+12–15cm)' }
+            : null;
+      if (!plan) {
+        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Unknown option.', show_alert: true });
+        return;
+      }
+      const drops = Number(xrpToDrops(plan.xrp.toString()));
+      const destTagStr = String(fromId).slice(0, 9);
+      const destTag = Number(destTagStr);
+      await ensureUser(originChatId, from);
+      // Record payment intent
+      const payment = await createPayment(originChatId, fromId, tier, plan.min, plan.max, drops, destTag);
+      const instructions =
+        `Send <b>${plan.xrp} XRP</b> to:\n` +
+        `<code>${XRP_DESTINATION}</code>\n` +
+        `Destination Tag: <b>${destTagStr}</b>\n\n` +
+        `This will be monitored for 10 minutes. When payment is detected, you'll grow in the originating group.\n` +
+        `Option chosen: ${plan.name}`;
+      await bot.sendMessage(chatId, addFooter(instructions), { parse_mode: 'HTML', disable_web_page_preview: true });
+      if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Waiting for payment...' });
+      // Start XRPL watch
+      watchForPaymentAndCredit(payment.id, drops, destTag, originChatId, fromId, plan.min, plan.max)
+        .catch(err => console.error('payment watcher error', err));
+    } catch (err) {
+      console.error('paygrow error', err);
+      if (query.id) {
+        try { await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' }); } catch {}
+      }
+    }
+    return;
+  }
   // Handle accept challenge
   if (!data.startsWith('accept:')) {
     if (query.id) bot.answerCallbackQuery(query.id);
@@ -658,6 +760,74 @@ bot.on('callback_query', async (query) => {
     }
   }
 });
+
+async function watchForPaymentAndCredit(paymentId, requiredDrops, destTag, originChatId, userId, minGain, maxGain) {
+  const client = new XrplClient(XRPL_ENDPOINT);
+  const timeoutMs = 10 * 60 * 1000;
+  const endAt = Date.now() + timeoutMs;
+  await client.connect();
+  try {
+    await client.request({ command: 'subscribe', accounts: [XRP_DESTINATION] });
+    const maybeFulfill = async (tx) => {
+      try {
+        const t = tx?.transaction || tx?.tx || tx;
+        const meta = tx?.meta || tx?.metaData || tx?.metaData;
+        if (!t || t.TransactionType !== 'Payment') return false;
+        if (t.Destination !== XRP_DESTINATION) return false;
+        const tag = t.DestinationTag;
+        if (Number(tag) !== Number(destTag)) return false;
+        // Determine delivered amount in drops
+        let deliveredDrops = null;
+        if (typeof t.Amount === 'string') {
+          deliveredDrops = Number(t.Amount);
+        } else if (meta && (meta.delivered_amount || meta.DeliveredAmount)) {
+          const da = meta.delivered_amount || meta.DeliveredAmount;
+          if (typeof da === 'string') deliveredDrops = Number(da);
+        }
+        if (deliveredDrops !== requiredDrops) return false;
+        // Credit user
+        const gain = Math.max(minGain, Math.min(maxGain, minGain + Math.floor(Math.random() * (maxGain - minGain + 1))));
+        await addLength(originChatId, userId, gain);
+        await fulfillPayment(paymentId, t.hash || 'unknown', gain);
+        // Notify user
+        try {
+          const label = getUsernameLabel({ id: userId });
+          await bot.sendMessage(userId, addFooter(`Payment received. +${gain}cm added in your group. Enjoy your swollen ego.`), { parse_mode: 'HTML', disable_web_page_preview: true });
+        } catch {}
+        return true;
+      } catch (e) {
+        console.error('maybeFulfill error', e);
+        return false;
+      }
+    };
+    // Immediate ledger scan not implemented; rely on live tx stream for the window
+    const onTx = async (event) => {
+      const done = await maybeFulfill(event);
+      if (done) {
+        try { await client.request({ command: 'unsubscribe', accounts: [XRP_DESTINATION] }); } catch {}
+        try { await client.disconnect(); } catch {}
+      }
+    };
+    client.on('transaction', onTx);
+    // Timeout in 10 minutes
+    setTimeout(async () => {
+      try {
+        await expirePayment(paymentId);
+        client.removeListener('transaction', onTx);
+        try { await client.request({ command: 'unsubscribe', accounts: [XRP_DESTINATION] }); } catch {}
+        try { await client.disconnect(); } catch {}
+        try {
+          await bot.sendMessage(userId, addFooter('No payment detected within 10 minutes. Try again if you actually have XRP.'), { parse_mode: 'HTML', disable_web_page_preview: true });
+        } catch {}
+      } catch (e) {
+        console.error('payment timeout cleanup error', e);
+      }
+    }, timeoutMs);
+  } catch (e) {
+    console.error('XRPL subscribe error', e);
+    try { await client.disconnect(); } catch {}
+  }
+}
 
 // Startup: always polling; also bind an HTTP port for Heroku health
 async function start() {

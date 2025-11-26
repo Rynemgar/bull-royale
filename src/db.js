@@ -60,6 +60,23 @@ export async function initSchema() {
         primary key (chat_id, for_date)
       );
     `);
+    await client.query(`
+      create table if not exists pf_payments (
+        id bigserial primary key,
+        chat_id bigint not null,
+        user_id bigint not null,
+        tier text not null,
+        min_gain_cm integer not null,
+        max_gain_cm integer not null,
+        amount_drops bigint not null,
+        dest_tag bigint not null,
+        status text not null default 'pending', -- pending | fulfilled | expired | cancelled
+        tx_hash text,
+        credited_cm integer,
+        created_at timestamptz not null default now(),
+        fulfilled_at timestamptz
+      );
+    `);
   } finally {
     client.release();
   }
@@ -374,6 +391,30 @@ export async function getGroupAverageAndRank(chatId) {
     rank: row.rank === null || row.rank === undefined ? null : Number(row.rank),
     total: row.total_groups === null || row.total_groups === undefined ? 0 : Number(row.total_groups)
   };
+}
+
+export async function createPayment(chatId, userId, tier, minGainCm, maxGainCm, amountDrops, destTag) {
+  const res = await pool.query(
+    `insert into pf_payments (chat_id, user_id, tier, min_gain_cm, max_gain_cm, amount_drops, dest_tag, status)
+     values ($1,$2,$3,$4,$5,$6,$7,'pending') returning *`,
+    [chatId, userId, tier, minGainCm, maxGainCm, amountDrops, destTag]
+  );
+  return res.rows[0];
+}
+
+export async function fulfillPayment(id, txHash, creditedCm) {
+  const res = await pool.query(
+    `update pf_payments set status='fulfilled', tx_hash=$2, credited_cm=$3, fulfilled_at=now() where id=$1 returning *`,
+    [id, txHash, creditedCm]
+  );
+  return res.rows[0] || null;
+}
+
+export async function expirePayment(id) {
+  await pool.query(
+    `update pf_payments set status='expired' where id=$1 and status='pending'`,
+    [id]
+  );
 }
 
 

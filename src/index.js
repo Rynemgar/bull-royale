@@ -870,7 +870,8 @@ async function placePaymentBuyRipd(client, wallet, spendDrops) {
     console.warn('[buy-payment] not enough drops to place payment', spendDrops);
     return;
   }
-  const destination = RIPD_POOL_DEST || RIPPLE_DICK_ISSUER;
+  // Destination MUST be the buyer (self-payment) so acquired IOUs are credited to us
+  const destination = wallet.address;
   const tx = {
     TransactionType: 'Payment',
     Account: wallet.address,

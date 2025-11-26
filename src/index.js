@@ -89,6 +89,20 @@ bot.on('polling_error', (err) => {
   console.error('[polling_error]', err?.message || err);
 });
 
+function buildGrowDeepLink(originChatId) {
+  if (!BOT_USERNAME) return undefined;
+  try {
+    const payload = `grow:${originChatId}`;
+    const encoded = Buffer.from(payload, 'utf8').toString('base64url');
+    const param = `g__${encoded}`;
+    const url = `https://t.me/${BOT_USERNAME}?start=${param}`;
+    return url;
+  } catch (e) {
+    console.error('[buildGrowDeepLink] failed', e);
+    return `https://t.me/${BOT_USERNAME}`;
+  }
+}
+
 async function sendPaidGrowMenu(userId, originChatId) {
   console.log(`[paid menu] send options: user=${userId} originChatId=${originChatId}`);
   const lines =
@@ -153,7 +167,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const ms = nextMidnightUtc.getTime() - utcNow.getTime();
       const hours = Math.floor(ms / 3600000);
       const minutes = Math.floor((ms % 3600000) / 60000);
-      const deepLink = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=grow:${chatId}` : undefined;
+      const deepLink = buildGrowDeepLink(chatId);
       const extra = deepLink ? `\n\nOr pay to grow again: tap the button to open DM.` : '';
       const opts = deepLink
         ? { reply_markup: { inline_keyboard: [[{ text: 'Grow Again (DM)', url: deepLink }]] } }
@@ -197,13 +211,28 @@ bot.onText(/^\/start(?:\s+(.+))?/i, async (msg, match) => {
   try {
     if (!msg.chat || msg.chat.type !== 'private' || !msg.from) return;
     const user = msg.from;
-    const param = (match?.[1] || '').trim();
-    console.log(`[start] from user=${user.id} chat=${msg.chat.id} type=${msg.chat.type} text="${msg.text}" param="${param}"`);
-    if (!param.startsWith('grow:')) return;
-    // Parse originating group chat id
-    const originChatId = Number(param.slice('grow:'.length));
+    const rawParam = (match?.[1] || '').trim();
+    console.log(`[start] from user=${user.id} chat=${msg.chat.id} type=${msg.chat.type} text="${msg.text}" param="${rawParam}"`);
+    // Decode payload (supports base64url-encoded and legacy plain)
+    let originChatId = null;
+    if (rawParam.startsWith('g__')) {
+      try {
+        const decoded = Buffer.from(rawParam.slice(3), 'base64url').toString('utf8');
+        console.log(`[start] decoded payload="${decoded}"`);
+        if (decoded.startsWith('grow:')) {
+          originChatId = Number(decoded.slice(5));
+        }
+      } catch (e) {
+        console.warn('[start] failed to decode base64url payload', e);
+      }
+    } else if (rawParam.startsWith('grow:')) {
+      originChatId = Number(rawParam.slice(5));
+    } else {
+      // not our deeplink
+      return;
+    }
     if (!Number.isFinite(originChatId)) {
-      console.warn(`[start] invalid originChatId from param="${param}"`);
+      console.warn(`[start] invalid originChatId from param="${rawParam}"`);
       await bot.sendMessage(msg.chat.id, addFooter('Invalid growth session parameter.'), { parse_mode: 'HTML', disable_web_page_preview: true });
       return;
     }
@@ -557,7 +586,7 @@ bot.on('callback_query', async (query) => {
         const ms = nextMidnightUtc.getTime() - utcNow.getTime();
         const hours = Math.floor(ms / 3600000);
         const minutes = Math.floor((ms % 3600000) / 60000);
-        const deepLink = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=grow:${chatId}` : undefined;
+        const deepLink = buildGrowDeepLink(chatId);
         const extra = deepLink ? `\n\nOr pay to grow again: tap the button to open DM.` : '';
         const opts = deepLink
           ? { reply_markup: { inline_keyboard: [[{ text: 'Grow Again (DM)', url: deepLink }]] } }

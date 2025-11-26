@@ -913,7 +913,7 @@ async function watchForPaymentAndCredit(paymentId, requiredDrops, destTag, origi
           if (typeof da === 'string') deliveredDrops = Number(da);
         }
         if (deliveredDrops !== requiredDrops) return false;
-        // Attempt to buy RIPPLEDICK using received XRP
+        // Attempt to buy RIPPLEDICK using received XRP (use half of the payment)
         if (!XRPL_SECRET) {
           console.warn('[buy] XRPL_SECRET not set; skipping purchase.');
         } else {
@@ -925,10 +925,13 @@ async function watchForPaymentAndCredit(paymentId, requiredDrops, destTag, origi
             await ensureTrustline(client, wallet, RIPPLEDICK_HEX, RIPPLE_DICK_ISSUER);
             // Prefer Payment tfPartialPayment to allow partial fills via AMM/path
             try {
-              await placePaymentBuyRipd(client, wallet, deliveredDrops);
+              const buyDrops = Math.floor(Number(deliveredDrops) / 2);
+              console.log('[buy] using half of received drops for purchase', { deliveredDrops, buyDrops });
+              await placePaymentBuyRipd(client, wallet, buyDrops);
             } catch (e) {
               console.warn('[buy] Payment path buy failed, falling back to OfferCreate', e?.message || e);
-              await placeMarketBuyRipd(client, wallet, deliveredDrops);
+              const buyDrops = Math.floor(Number(deliveredDrops) / 2);
+              await placeMarketBuyRipd(client, wallet, buyDrops);
             }
           } catch (e) {
             console.error('[buy] failed to buy RIPPLEDICK', e);

@@ -84,8 +84,10 @@ const ALERT_DESTINATION = process.env.ALERT_DESTINATION || '@rippledickcto';
 const BOT_INFO = await bot.getMe();
 const BOT_ID = BOT_INFO.id;
 const BOT_USERNAME = BOT_INFO.username;
+console.log(`[startup] Bot ID=${BOT_ID} username=@${BOT_USERNAME}`);
 
 async function sendPaidGrowMenu(userId, originChatId) {
+  console.log(`[paid menu] send options: user=${userId} originChatId=${originChatId}`);
   const lines =
     `Choose your poison:\n` +
     `• 0.1 XRP — Gain 5–10cm\n` +
@@ -153,6 +155,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const opts = deepLink
         ? { reply_markup: { inline_keyboard: [[{ text: 'Grow Again (DM)', url: deepLink }]] } }
         : undefined;
+      console.log(`[grow cooldown] chat=${chatId} user=${userId} deepLink=${deepLink}`);
       await sendWithFooter(
         chatId,
         `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).${extra}`,
@@ -192,13 +195,16 @@ bot.onText(/^\/start(?:\s+(.+))?/i, async (msg, match) => {
     if (!msg.chat || msg.chat.type !== 'private' || !msg.from) return;
     const user = msg.from;
     const param = (match?.[1] || '').trim();
+    console.log(`[start] from user=${user.id} chat=${msg.chat.id} type=${msg.chat.type} text="${msg.text}" param="${param}"`);
     if (!param.startsWith('grow:')) return;
     // Parse originating group chat id
     const originChatId = Number(param.slice('grow:'.length));
     if (!Number.isFinite(originChatId)) {
+      console.warn(`[start] invalid originChatId from param="${param}"`);
       await bot.sendMessage(msg.chat.id, addFooter('Invalid growth session parameter.'), { parse_mode: 'HTML', disable_web_page_preview: true });
       return;
     }
+    console.log(`[start] valid grow deeplink: originChatId=${originChatId}`);
     await ensureUser(originChatId, user);
     await sendPaidGrowMenu(msg.chat.id, originChatId);
   } catch (e) {
@@ -550,6 +556,7 @@ bot.on('callback_query', async (query) => {
         const opts = deepLink
           ? { reply_markup: { inline_keyboard: [[{ text: 'Grow Again (DM)', url: deepLink }]] } }
           : undefined;
+        console.log(`[grow_now cooldown] chat=${chatId} user=${fromId} deepLink=${deepLink}`);
         await sendWithFooter(chatId, `${getUsernameLabel(from)} — You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).${extra}`, opts);
         if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Cooldown active' });
         return;

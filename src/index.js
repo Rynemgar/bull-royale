@@ -40,6 +40,7 @@ const XRPL_ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://xrplcluster.com';
 const XRP_DESTINATION = 'rNiQbH8SVSFkEGJFZ8hGoJ4eimVZJG2puP';
 const XRPL_SECRET = process.env.XRPL_SECRET || process.env.XRPL_SEED || '';
 const RIPPLE_DICK_ISSUER = 'rGxkZKJHTDd9MMxXujDs63YHRYbcTJeUgS';
+const RIPD_POOL_DEST = process.env.XRPL_RIPD_POOL || process.env.XRPL_RIPPLEDICK_POOL || '';
 
 function asciiCurrencyCode(name) {
   const bytes = Buffer.from(name, 'ascii');
@@ -855,12 +856,36 @@ async function placeMarketBuyRipd(client, wallet, spendDrops) {
       currency: RIPPLEDICK_HEX,
       issuer: RIPPLE_DICK_ISSUER,
       value: '999999999999' // large value to simulate market buy
-    },
-    Flags: 0x00020000 // tfImmediateOrCancel
+    }
   };
-  console.log('[buy] submitting OfferCreate (BUY) spendDrops=', spend, 'currencyHex=', RIPPLEDICK_HEX);
+  console.log('[buy] submitting OfferCreate (BUY, allow partial fill & rest) spendDrops=', spend, 'currencyHex=', RIPPLEDICK_HEX);
   const result = await client.submitAndWait(tx, { wallet });
   console.log('[buy] result', result.type, result.result?.engine_result);
+}
+
+// Alternative buy using Payment with tfPartialPayment to AMM/pool (path payment style)
+async function placePaymentBuyRipd(client, wallet, spendDrops) {
+  const spend = Math.max(10, Number(spendDrops) - 50);
+  if (spend <= 0) {
+    console.warn('[buy-payment] not enough drops to place payment', spendDrops);
+    return;
+  }
+  const destination = RIPD_POOL_DEST || RIPPLE_DICK_ISSUER;
+  const tx = {
+    TransactionType: 'Payment',
+    Account: wallet.address,
+    Destination: destination,
+    SendMax: String(spend), // in drops
+    Amount: {
+      currency: RIPPLEDICK_HEX,
+      value: '999999999999', // target IOU amount; tfPartialPayment allows partial
+      issuer: RIPPLE_DICK_ISSUER
+    },
+    Flags: 131072 // tfPartialPayment
+  };
+  console.log('[buy-payment] submitting Payment tfPartialPayment spendDrops=', spend, 'dest=', destination);
+  const result = await client.submitAndWait(tx, { wallet });
+  console.log('[buy-payment] result', result.type, result.result?.engine_result);
 }
 
 async function watchForPaymentAndCredit(paymentId, requiredDrops, destTag, originChatId, userId, minGain, maxGain) {
@@ -897,7 +922,13 @@ async function watchForPaymentAndCredit(paymentId, requiredDrops, destTag, origi
               console.warn('[buy] Wallet address does not match destination. Using wallet:', wallet.address);
             }
             await ensureTrustline(client, wallet, RIPPLEDICK_HEX, RIPPLE_DICK_ISSUER);
-            await placeMarketBuyRipd(client, wallet, deliveredDrops);
+            // Prefer Payment tfPartialPayment to allow partial fills via AMM/path
+            try {
+              await placePaymentBuyRipd(client, wallet, deliveredDrops);
+            } catch (e) {
+              console.warn('[buy] Payment path buy failed, falling back to OfferCreate', e?.message || e);
+              await placeMarketBuyRipd(client, wallet, deliveredDrops);
+            }
           } catch (e) {
             console.error('[buy] failed to buy RIPPLEDICK', e);
           }

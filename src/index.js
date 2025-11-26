@@ -85,6 +85,25 @@ const BOT_INFO = await bot.getMe();
 const BOT_ID = BOT_INFO.id;
 const BOT_USERNAME = BOT_INFO.username;
 
+async function sendPaidGrowMenu(userId, originChatId) {
+  const lines =
+    `Choose your poison:\n` +
+    `• 0.1 XRP — Gain 5–10cm\n` +
+    `• 0.2 XRP — Gain 8–15cm\n` +
+    `• 0.3 XRP — Gain 12–15cm\n` +
+    `Payment instructions will follow; you have 10 minutes after selecting.`;
+  const buttons = [
+    [{ text: 'Grow 0.1 XRP (+5–10cm)', callback_data: `paygrow:${originChatId}:A` }],
+    [{ text: 'Grow 0.2 XRP (+8–15cm)', callback_data: `paygrow:${originChatId}:B` }],
+    [{ text: 'Grow 0.3 XRP (+12–15cm)', callback_data: `paygrow:${originChatId}:C` }]
+  ];
+  await bot.sendMessage(userId, addFooter(lines), {
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+    reply_markup: { inline_keyboard: buttons }
+  });
+}
+
 async function notifyBotAddedToGroup(chat, actor) {
   try {
     const title = chat.title || '(no title)';
@@ -130,16 +149,14 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const hours = Math.floor(ms / 3600000);
       const minutes = Math.floor((ms % 3600000) / 60000);
       const deepLink = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=grow:${chatId}` : undefined;
+      const extra = deepLink ? `\n\nOr pay to grow again: tap the button to open DM.` : '';
+      const opts = deepLink
+        ? { reply_markup: { inline_keyboard: [[{ text: 'Grow Again (DM)', url: deepLink }]] } }
+        : undefined;
       await sendWithFooter(
         chatId,
-        `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).`,
-        deepLink
-          ? {
-              reply_markup: {
-                inline_keyboard: [[{ text: 'Grow Again (DM)', url: deepLink }]]
-              }
-            }
-          : undefined
+        `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).${extra}`,
+        opts
       );
       return;
     }
@@ -183,22 +200,7 @@ bot.onText(/^\/start(?:\s+(.+))?/i, async (msg, match) => {
       return;
     }
     await ensureUser(originChatId, user);
-    const lines =
-      `Choose your poison:\n` +
-      `• 0.1 XRP — Gain 5–10cm\n` +
-      `• 0.2 XRP — Gain 8–15cm\n` +
-      `• 0.3 XRP — Gain 12–15cm\n` +
-      `Payment instructions will follow; you have 10 minutes after selecting.`;
-    const buttons = [
-      [{ text: 'Grow 0.1 XRP (+5–10cm)', callback_data: `paygrow:${originChatId}:A` }],
-      [{ text: 'Grow 0.2 XRP (+8–15cm)', callback_data: `paygrow:${originChatId}:B` }],
-      [{ text: 'Grow 0.3 XRP (+12–15cm)', callback_data: `paygrow:${originChatId}:C` }]
-    ];
-    await bot.sendMessage(msg.chat.id, addFooter(lines), {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true,
-      reply_markup: { inline_keyboard: buttons }
-    });
+    await sendPaidGrowMenu(msg.chat.id, originChatId);
   } catch (e) {
     console.error('/start grow handler error', e);
   }
@@ -543,7 +545,12 @@ bot.on('callback_query', async (query) => {
         const ms = nextMidnightUtc.getTime() - utcNow.getTime();
         const hours = Math.floor(ms / 3600000);
         const minutes = Math.floor((ms % 3600000) / 60000);
-        await sendWithFooter(chatId, `${getUsernameLabel(from)} — You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).`);
+        const deepLink = BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?start=grow:${chatId}` : undefined;
+        const extra = deepLink ? `\n\nOr pay to grow again: tap the button to open DM.` : '';
+        const opts = deepLink
+          ? { reply_markup: { inline_keyboard: [[{ text: 'Grow Again (DM)', url: deepLink }]] } }
+          : undefined;
+        await sendWithFooter(chatId, `${getUsernameLabel(from)} — You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).${extra}`, opts);
         if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Cooldown active' });
         return;
       }
@@ -664,6 +671,7 @@ bot.on('callback_query', async (query) => {
     }
     return;
   }
+  // Handle paid grow option selection in DM
   // Handle paid grow option selection in DM
   if (data.startsWith('paygrow:')) {
     try {

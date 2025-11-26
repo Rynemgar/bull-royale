@@ -85,6 +85,9 @@ const BOT_INFO = await bot.getMe();
 const BOT_ID = BOT_INFO.id;
 const BOT_USERNAME = BOT_INFO.username;
 console.log(`[startup] Bot ID=${BOT_ID} username=@${BOT_USERNAME}`);
+bot.on('polling_error', (err) => {
+  console.error('[polling_error]', err?.message || err);
+});
 
 async function sendPaidGrowMenu(userId, originChatId) {
   console.log(`[paid menu] send options: user=${userId} originChatId=${originChatId}`);
@@ -496,6 +499,9 @@ bot.onText(/^\/phallusoftheday(@\w+)?\b/i, async (msg) => {
 bot.on('message', async (msg) => {
   try {
     if (!msg.chat) return;
+    if (msg.chat.type === 'private') {
+      console.log(`[message][private] from=${msg.from?.id} chat=${msg.chat.id} text="${msg.text}"`);
+    }
     const newMembers = msg.new_chat_members;
     if (!newMembers || newMembers.length === 0) return;
     const botWasAdded = newMembers.some(m => m && m.id === BOT_ID);

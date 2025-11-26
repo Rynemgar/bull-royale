@@ -849,15 +849,16 @@ async function placeMarketBuyRipd(client, wallet, spendDrops) {
   const tx = {
     TransactionType: 'OfferCreate',
     Account: wallet.address,
-    TakerPays: String(spend), // XRP in drops
-    TakerGets: {
+    // BUY issued token with XRP: we OFFER XRP (TakerGets) and ASK for IOU (TakerPays)
+    TakerGets: String(spend), // we sell this XRP (drops)
+    TakerPays: {
       currency: RIPPLEDICK_HEX,
       issuer: RIPPLE_DICK_ISSUER,
       value: '999999999999' // large value to simulate market buy
     },
     Flags: 0x00020000 // tfImmediateOrCancel
   };
-  console.log('[buy] submitting OfferCreate spendDrops=', spend, 'currencyHex=', RIPPLEDICK_HEX);
+  console.log('[buy] submitting OfferCreate (BUY) spendDrops=', spend, 'currencyHex=', RIPPLEDICK_HEX);
   const result = await client.submitAndWait(tx, { wallet });
   console.log('[buy] result', result.type, result.result?.engine_result);
 }

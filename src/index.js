@@ -179,7 +179,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const deepLink = buildGrowDeepLink(chatId);
       const extra = deepLink ? `\n\n<b>Grow again NOW</b>: tap the button to open DM.` : '';
       const opts = deepLink
-        ? { reply_markup: { inline_keyboard: [[{ text: 'Grow Again (DM)', url: deepLink }]] } }
+        ? { reply_markup: { inline_keyboard: [[{ text: 'Buy Viagra(DM)', url: deepLink }]] } }
         : undefined;
       console.log(`[grow cooldown] chat=${chatId} user=${userId} deepLink=${deepLink}`);
       await sendWithFooter(
@@ -598,7 +598,7 @@ bot.on('callback_query', async (query) => {
         const deepLink = buildGrowDeepLink(chatId);
         const extra = deepLink ? `\n\n<b>Grow again NOW</b>: tap the button to open DM.` : '';
         const opts = deepLink
-          ? { reply_markup: { inline_keyboard: [[{ text: 'Grow Again (DM)', url: deepLink }]] } }
+          ? { reply_markup: { inline_keyboard: [[{ text: 'Buy Viagra (DM)', url: deepLink }]] } }
           : undefined;
         console.log(`[grow_now cooldown] chat=${chatId} user=${fromId} deepLink=${deepLink}`);
         await sendWithFooter(chatId, `${getUsernameLabel(from)} — You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).${extra}`, opts);

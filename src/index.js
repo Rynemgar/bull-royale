@@ -179,7 +179,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const deepLink = buildGrowDeepLink(chatId);
       const extra = deepLink ? `\n\n<b>Grow again NOW</b>: tap the button to open DM.` : '';
       const opts = deepLink
-        ? { reply_markup: { inline_keyboard: [[{ text: 'Buy Viagra(DM)', url: deepLink }]] } }
+        ? { reply_markup: { inline_keyboard: [[{ text: 'Buy Viagra (DM)', url: deepLink }]] } }
         : undefined;
       console.log(`[grow cooldown] chat=${chatId} user=${userId} deepLink=${deepLink}`);
       await sendWithFooter(

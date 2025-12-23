@@ -48,6 +48,7 @@ function asciiCurrencyCode(name) {
 }
 const RIPPLEDICK_HEX = asciiCurrencyCode('RIPPLEDICK');
 const GROW_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/grow.jpg';
+const ATTACK_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/attack.jpg';
 
 function getUtcDate() {
   return new Date(new Date().toISOString());
@@ -457,15 +458,15 @@ bot.onText(/^\/attack(@\w+)?(?:\s+(\d+))?/i, async (msg, match) => {
     if (existing) {
       await cancelOpenChallengesByAttacker(chatId, userId);
     }
-    const message = await sendWithGrow(
-      chatId,
-      `${getUsernameLabel(user)} challenges the group to a Cock fight for ${bet}cm!\nAccept the challenge and swing your dick!`,
-      {
-        reply_markup: {
-          inline_keyboard: [[{ text: 'Accept Cock Fight', callback_data: `accept:${bet}` }]]
-        }
+    const caption =
+      `${getUsernameLabel(user)} challenges the group to a Cock fight for ${bet}cm!\nAccept the challenge and swing your dick!`;
+    const message = await bot.sendPhoto(chatId, ATTACK_IMAGE_URL, {
+      parse_mode: 'HTML',
+      caption: addFooter(caption),
+      reply_markup: {
+        inline_keyboard: [[{ text: 'Accept Cock Fight', callback_data: `accept:${bet}` }]]
       }
-    );
+    });
     await createChallenge(chatId, userId, bet, message.message_id);
   } catch (err) {
     console.error('attack error', err);
@@ -817,7 +818,7 @@ bot.on('callback_query', async (query) => {
       `${winnerMention}: ${updatedWinner?.length_cm ?? '??'}cm\n` +
       `${loserMention}: ${updatedLoser?.length_cm ?? '??'}cm`;
     try {
-      await bot.editMessageText(addFooter(baseText), { chat_id: chatId, message_id: msg.message_id, parse_mode: 'HTML', disable_web_page_preview: true });
+      await bot.editMessageCaption(addFooter(baseText), { chat_id: chatId, message_id: msg.message_id, parse_mode: 'HTML' });
     } catch {
       await sendWithFooter(chatId, baseText);
     }

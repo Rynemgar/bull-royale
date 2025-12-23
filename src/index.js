@@ -49,6 +49,7 @@ function asciiCurrencyCode(name) {
 const RIPPLEDICK_HEX = asciiCurrencyCode('RIPPLEDICK');
 const GROW_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/grow.jpg';
 const ATTACK_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/attack.jpg';
+const ATTACK_RESOLVED_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/attack2.jpg';
 
 function getUtcDate() {
   return new Date(new Date().toISOString());
@@ -818,9 +819,21 @@ bot.on('callback_query', async (query) => {
       `${winnerMention}: ${updatedWinner?.length_cm ?? '??'}cm\n` +
       `${loserMention}: ${updatedLoser?.length_cm ?? '??'}cm`;
     try {
-      await bot.editMessageCaption(addFooter(baseText), { chat_id: chatId, message_id: msg.message_id, parse_mode: 'HTML' });
+      await bot.editMessageMedia(
+        {
+          type: 'photo',
+          media: ATTACK_RESOLVED_IMAGE_URL,
+          caption: addFooter(baseText),
+          parse_mode: 'HTML'
+        },
+        { chat_id: chatId, message_id: msg.message_id }
+      );
     } catch {
-      await sendWithFooter(chatId, baseText);
+      try {
+        await bot.editMessageCaption(addFooter(baseText), { chat_id: chatId, message_id: msg.message_id, parse_mode: 'HTML' });
+      } catch {
+        await sendWithFooter(chatId, baseText);
+      }
     }
     if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Duel complete!' });
   } catch (err) {

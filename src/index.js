@@ -47,6 +47,7 @@ function asciiCurrencyCode(name) {
   return bytes.toString('hex').toUpperCase().padEnd(40, '0').slice(0, 40);
 }
 const RIPPLEDICK_HEX = asciiCurrencyCode('RIPPLEDICK');
+const GROW_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/grow.jpg';
 
 function getUtcDate() {
   return new Date(new Date().toISOString());
@@ -182,11 +183,11 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
         ? { reply_markup: { inline_keyboard: [[{ text: 'Buy Viagra (DM)', url: deepLink }]] } }
         : undefined;
       console.log(`[grow cooldown] chat=${chatId} user=${userId} deepLink=${deepLink}`);
-      await sendWithFooter(
-        chatId,
-        `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).${extra}`,
-        opts
-      );
+      {
+        const caption = `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).${extra}`;
+        const photoOpts = { ...(opts || {}), parse_mode: 'HTML', caption: addFooter(caption) };
+        await bot.sendPhoto(chatId, GROW_IMAGE_URL, photoOpts);
+      }
       return;
     }
     // If already over 100cm, 15% chance to snap and lose 10–50% total
@@ -196,7 +197,10 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const loss = Math.max(1, Math.floor(Number(current.length_cm) * pct));
       const updated = await applyGrowth(chatId, userId, -loss, utcNow);
       const pctText = Math.round(pct * 100);
-      await sendWithFooter(chatId, `${getUsernameLabel(user)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`);
+      {
+        const caption = `${getUsernameLabel(user)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`;
+        await bot.sendPhoto(chatId, GROW_IMAGE_URL, { parse_mode: 'HTML', caption: addFooter(caption) });
+      }
     } else {
       // 90% chance positive (1..15), 10% chance negative (-1..-5), never 0
       const mustBePositive = current && Number(current.length_cm) === 0;
@@ -207,11 +211,17 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
           : (-1 - Math.floor(Math.random() * 5)));
       const updated = await applyGrowth(chatId, userId, delta, utcNow);
       const sign = delta >= 0 ? '+' : '';
-      await sendWithFooter(chatId, `${getUsernameLabel(user)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`);
+      {
+        const caption = `${getUsernameLabel(user)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`;
+        await bot.sendPhoto(chatId, GROW_IMAGE_URL, { parse_mode: 'HTML', caption: addFooter(caption) });
+      }
     }
   } catch (err) {
     console.error('grow error', err);
-    await sendWithFooter(chatId, 'Something went wrong processing /grow.');
+    {
+      const caption = 'Something went wrong processing /grow.';
+      await bot.sendPhoto(chatId, GROW_IMAGE_URL, { parse_mode: 'HTML', caption: addFooter(caption) });
+    }
   }
 });
 

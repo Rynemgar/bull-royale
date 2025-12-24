@@ -50,6 +50,9 @@ const RIPPLEDICK_HEX = asciiCurrencyCode('RIPPLEDICK');
 const GROW_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/grow.jpg';
 const ATTACK_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/attack.jpg';
 const ATTACK_RESOLVED_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/attack2.jpg';
+const SHRUNK_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/Shrunk.jpg';
+const SNAP_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/Snap.jpg';
+const WANK_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/wank.jpg';
 
 function getUtcDate() {
   return new Date(new Date().toISOString());
@@ -201,7 +204,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const pctText = Math.round(pct * 100);
       {
         const caption = `${getUsernameLabel(user)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`;
-        await bot.sendPhoto(chatId, GROW_IMAGE_URL, { parse_mode: 'HTML', caption: addFooter(caption) });
+        await bot.sendPhoto(chatId, SNAP_IMAGE_URL, { parse_mode: 'HTML', caption: addFooter(caption) });
       }
     } else {
       // 90% chance positive (1..15), 10% chance negative (-1..-5), never 0
@@ -215,7 +218,8 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const sign = delta >= 0 ? '+' : '';
       {
         const caption = `${getUsernameLabel(user)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`;
-        await bot.sendPhoto(chatId, GROW_IMAGE_URL, { parse_mode: 'HTML', caption: addFooter(caption) });
+        const imageUrl = delta < 0 ? SHRUNK_IMAGE_URL : GROW_IMAGE_URL;
+        await bot.sendPhoto(chatId, imageUrl, { parse_mode: 'HTML', caption: addFooter(caption) });
       }
     }
   } catch (err) {
@@ -303,7 +307,10 @@ bot.onText(/^\/wank(@\w+)?\b/i, async (msg) => {
     const current = await getUser(chatId, user.id);
     const currLen = Number(current?.length_cm ?? 0);
     if (!current || currLen <= 0) {
-      await sendWithGrow(chatId, `${getUsernameLabel(user)} tried to have a cheeky wank, but there's nothing left to lose.`);
+      {
+        const caption = `${getUsernameLabel(user)} tried to have a cheeky wank, but there's nothing left to lose.`;
+        await bot.sendPhoto(chatId, WANK_IMAGE_URL, withGrowButton({ caption: addFooter(caption), parse_mode: 'HTML' }));
+      }
       return;
     }
     // 10% chance to swell +10%, otherwise shrink 10–90%
@@ -311,17 +318,26 @@ bot.onText(/^\/wank(@\w+)?\b/i, async (msg) => {
       const gainPct = 0.10; // 10%
       const gain = Math.max(1, Math.floor(currLen * gainPct));
       const updated = await addLength(chatId, user.id, gain);
-      await sendWithGrow(chatId, `${getUsernameLabel(user)} had a wank and it swelled! +${gain}cm (10%). Current length: ${updated.length_cm}cm.`);
+      {
+        const caption = `${getUsernameLabel(user)} had a wank and it swelled! +${gain}cm (10%). Current length: ${updated.length_cm}cm.`;
+        await bot.sendPhoto(chatId, WANK_IMAGE_URL, withGrowButton({ caption: addFooter(caption), parse_mode: 'HTML' }));
+      }
     } else {
       const pct = 0.10 + Math.random() * 0.80; // 10%..90%
       const loss = Math.max(1, Math.floor(currLen * pct));
       const updated = await addLength(chatId, user.id, -loss);
       const pctText = Math.round(pct * 100);
-      await sendWithGrow(chatId, `${getUsernameLabel(user)} had a wank and lost ${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm. Wank carefully!`);
+      {
+        const caption = `${getUsernameLabel(user)} had a wank and lost ${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm. Wank carefully!`;
+        await bot.sendPhoto(chatId, WANK_IMAGE_URL, withGrowButton({ caption: addFooter(caption), parse_mode: 'HTML' }));
+      }
     }
   } catch (err) {
     console.error('wank error', err);
-    await sendWithGrow(chatId, 'Could not process /wank.');
+    {
+      const caption = 'Could not process /wank.';
+      await bot.sendPhoto(chatId, WANK_IMAGE_URL, withGrowButton({ caption: addFooter(caption), parse_mode: 'HTML' }));
+    }
   }
 });
 

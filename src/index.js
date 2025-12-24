@@ -639,7 +639,10 @@ bot.on('callback_query', async (query) => {
         const loss = Math.max(1, Math.floor(Number(current.length_cm) * pct));
         const updated = await applyGrowth(chatId, fromId, -loss, utcNow);
         const pctText = Math.round(pct * 100);
-        await sendWithFooter(chatId, `${getUsernameLabel(from)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`);
+        {
+          const caption = `${getUsernameLabel(from)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`;
+          await bot.sendPhoto(chatId, SNAP_IMAGE_URL, { parse_mode: 'HTML', caption: addFooter(caption) });
+        }
       } else {
         const mustBePositive = current && Number(current.length_cm) === 0;
         const delta = mustBePositive
@@ -649,7 +652,11 @@ bot.on('callback_query', async (query) => {
             : (-1 - Math.floor(Math.random() * 5)));
         const updated = await applyGrowth(chatId, fromId, delta, utcNow);
         const sign = delta >= 0 ? '+' : '';
-        await sendWithFooter(chatId, `${getUsernameLabel(from)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`);
+        {
+          const caption = `${getUsernameLabel(from)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`;
+          const imageUrl = delta < 0 ? SHRUNK_IMAGE_URL : GROW_IMAGE_URL;
+          await bot.sendPhoto(chatId, imageUrl, { parse_mode: 'HTML', caption: addFooter(caption) });
+        }
       }
       if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Grown!' });
     } catch (err) {

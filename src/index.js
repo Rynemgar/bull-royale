@@ -26,7 +26,10 @@ import {
   getGroupAverageAndRank,
   createPayment,
   fulfillPayment,
-  expirePayment
+  expirePayment,
+  ensureImageDefaults,
+  getAllImages,
+  setImageUrl
 } from './db.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -53,6 +56,20 @@ const ATTACK_RESOLVED_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uplo
 const SHRUNK_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/Shrunk.jpg';
 const SNAP_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/Snap.jpg';
 const WANK_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/wank.jpg';
+
+// Image config (DB-backed with defaults)
+const DEFAULT_IMAGES = {
+  grow: GROW_IMAGE_URL,
+  shrunk: SHRUNK_IMAGE_URL,
+  snap: SNAP_IMAGE_URL,
+  attack: ATTACK_IMAGE_URL,
+  attack_resolved: ATTACK_RESOLVED_IMAGE_URL,
+  wank: WANK_IMAGE_URL
+};
+let imagesCache = { ...DEFAULT_IMAGES };
+function getImageUrl(key) {
+  return imagesCache[key] || DEFAULT_IMAGES[key];
+}
 
 function getUtcDate() {
   return new Date(new Date().toISOString());
@@ -100,6 +117,15 @@ const BOT_INFO = await bot.getMe();
 const BOT_ID = BOT_INFO.id;
 const BOT_USERNAME = BOT_INFO.username;
 console.log(`[startup] Bot ID=${BOT_ID} username=@${BOT_USERNAME}`);
+// Initialize image defaults and load cache
+await ensureImageDefaults(DEFAULT_IMAGES);
+async function reloadImagesCache() {
+  const rows = await getAllImages();
+  const next = { ...DEFAULT_IMAGES };
+  for (const r of rows) next[r.key] = r.url;
+  imagesCache = next;
+}
+await reloadImagesCache();
 bot.on('polling_error', (err) => {
   console.error('[polling_error]', err?.message || err);
 });
@@ -191,7 +217,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       {
         const caption = `You've already fondled your Phallus today.  Wait until tomorrow. \nResets at midnight UTC (${hours}h ${minutes}m).${extra}`;
         const photoOpts = { ...(opts || {}), parse_mode: 'HTML', caption: addFooter(caption) };
-        await bot.sendPhoto(chatId, GROW_IMAGE_URL, photoOpts);
+        await bot.sendPhoto(chatId, getImageUrl('grow'), photoOpts);
       }
       return;
     }
@@ -204,7 +230,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const pctText = Math.round(pct * 100);
       {
         const caption = `${getUsernameLabel(user)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`;
-        await bot.sendPhoto(chatId, SNAP_IMAGE_URL, { parse_mode: 'HTML', caption: addFooter(caption) });
+        await bot.sendPhoto(chatId, getImageUrl('snap'), { parse_mode: 'HTML', caption: addFooter(caption) });
       }
     } else {
       // 90% chance positive (1..15), 10% chance negative (-1..-5), never 0
@@ -218,7 +244,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       const sign = delta >= 0 ? '+' : '';
       {
         const caption = `${getUsernameLabel(user)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`;
-        const imageUrl = delta < 0 ? SHRUNK_IMAGE_URL : GROW_IMAGE_URL;
+        const imageUrl = delta < 0 ? getImageUrl('shrunk') : getImageUrl('grow');
         await bot.sendPhoto(chatId, imageUrl, { parse_mode: 'HTML', caption: addFooter(caption) });
       }
     }
@@ -226,7 +252,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
     console.error('grow error', err);
     {
       const caption = 'Something went wrong processing /grow.';
-      await bot.sendPhoto(chatId, GROW_IMAGE_URL, { parse_mode: 'HTML', caption: addFooter(caption) });
+      await bot.sendPhoto(chatId, getImageUrl('grow'), { parse_mode: 'HTML', caption: addFooter(caption) });
     }
   }
 });
@@ -309,7 +335,7 @@ bot.onText(/^\/wank(@\w+)?\b/i, async (msg) => {
     if (!current || currLen <= 0) {
       {
         const caption = `${getUsernameLabel(user)} tried to have a cheeky wank, but there's nothing left to lose.`;
-        await bot.sendPhoto(chatId, WANK_IMAGE_URL, withGrowButton({ caption: addFooter(caption), parse_mode: 'HTML' }));
+        await bot.sendPhoto(chatId, getImageUrl('wank'), withGrowButton({ caption: addFooter(caption), parse_mode: 'HTML' }));
       }
       return;
     }
@@ -320,7 +346,7 @@ bot.onText(/^\/wank(@\w+)?\b/i, async (msg) => {
       const updated = await addLength(chatId, user.id, gain);
       {
         const caption = `${getUsernameLabel(user)} had a wank and it swelled! +${gain}cm (10%). Current length: ${updated.length_cm}cm.`;
-        await bot.sendPhoto(chatId, WANK_IMAGE_URL, withGrowButton({ caption: addFooter(caption), parse_mode: 'HTML' }));
+        await bot.sendPhoto(chatId, getImageUrl('wank'), withGrowButton({ caption: addFooter(caption), parse_mode: 'HTML' }));
       }
     } else {
       const pct = 0.10 + Math.random() * 0.80; // 10%..90%
@@ -329,14 +355,14 @@ bot.onText(/^\/wank(@\w+)?\b/i, async (msg) => {
       const pctText = Math.round(pct * 100);
       {
         const caption = `${getUsernameLabel(user)} had a wank and lost ${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm. Wank carefully!`;
-        await bot.sendPhoto(chatId, WANK_IMAGE_URL, withGrowButton({ caption: addFooter(caption), parse_mode: 'HTML' }));
+        await bot.sendPhoto(chatId, getImageUrl('wank'), withGrowButton({ caption: addFooter(caption), parse_mode: 'HTML' }));
       }
     }
   } catch (err) {
     console.error('wank error', err);
     {
       const caption = 'Could not process /wank.';
-      await bot.sendPhoto(chatId, WANK_IMAGE_URL, withGrowButton({ caption: addFooter(caption), parse_mode: 'HTML' }));
+      await bot.sendPhoto(chatId, getImageUrl('wank'), withGrowButton({ caption: addFooter(caption), parse_mode: 'HTML' }));
     }
   }
 });
@@ -477,7 +503,7 @@ bot.onText(/^\/attack(@\w+)?(?:\s+(\d+))?/i, async (msg, match) => {
     }
     const caption =
       `${getUsernameLabel(user)} challenges the group to a Cock fight for ${bet}cm!\nAccept the challenge and swing your dick!`;
-    const message = await bot.sendPhoto(chatId, ATTACK_IMAGE_URL, {
+    const message = await bot.sendPhoto(chatId, getImageUrl('attack'), {
       parse_mode: 'HTML',
       caption: addFooter(caption),
       reply_markup: {
@@ -490,6 +516,30 @@ bot.onText(/^\/attack(@\w+)?(?:\s+(\d+))?/i, async (msg, match) => {
     await sendWithGrow(chatId, 'Something went wrong creating the challenge.');
   }
 });
+
+// /update — admin dashboard to update images
+bot.onText(/^\/update(@\w+)?\b/i, async (msg) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  const from = msg.from;
+  if (from.id !== ADMIN_USER_ID) return;
+  const keyboard = [
+    [{ text: 'Update Grow', callback_data: 'imgupd:grow' }],
+    [{ text: 'Update Shrunk', callback_data: 'imgupd:shrunk' }],
+    [{ text: 'Update Snap', callback_data: 'imgupd:snap' }],
+    [{ text: 'Update Attack', callback_data: 'imgupd:attack' }],
+    [{ text: 'Update Attack Resolved', callback_data: 'imgupd:attack_resolved' }],
+    [{ text: 'Update Wank', callback_data: 'imgupd:wank' }]
+  ];
+  const text = 'Admin: Choose which image to update.';
+  await bot.sendMessage(chatId, addFooter(text), {
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+    reply_markup: { inline_keyboard: keyboard }
+  });
+});
+
+const pendingImageUpdate = new Map(); // adminUserId -> { key }
 
 // /stats (optionally with @username to view others)
 bot.onText(/^\/stats(@\w+)?(?:\s+(.+))?/i, async (msg, match) => {
@@ -565,6 +615,44 @@ bot.onText(/^\/phallusoftheday(@\w+)?\b/i, async (msg) => {
 bot.on('message', async (msg) => {
   try {
     if (!msg.chat) return;
+    // Handle admin image update reply
+    if (msg.from && msg.from.id === ADMIN_USER_ID && pendingImageUpdate.has(msg.from.id)) {
+      const { key } = pendingImageUpdate.get(msg.from.id);
+      const label = key.replace(/_/g, ' ');
+      let newUrl = null;
+      if (Array.isArray(msg.photo) && msg.photo.length > 0) {
+        const best = msg.photo.reduce((a, b) => ((a.file_size || 0) > (b.file_size || 0) ? a : b));
+        try {
+          const file = await bot.getFile(best.file_id);
+          if (file && file.file_path) {
+            newUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+          }
+        } catch (e) {
+          console.error('getFile failed for admin image update', e);
+        }
+      } else if (typeof msg.text === 'string' && /^https?:\/\//i.test(msg.text.trim())) {
+        newUrl = msg.text.trim();
+      }
+      if (!newUrl) {
+        await bot.sendMessage(msg.chat.id, addFooter('Please send a photo or a valid http(s) URL.'), {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true
+        });
+        return;
+      }
+      await setImageUrl(key, newUrl);
+      await reloadImagesCache();
+      try {
+        await bot.sendPhoto(msg.chat.id, getImageUrl(key), withGrowButton({ caption: addFooter(`Updated ${label} image.`), parse_mode: 'HTML' }));
+      } catch {
+        await bot.sendMessage(msg.chat.id, addFooter(`Updated ${label} image to:\n${newUrl}`), {
+          parse_mode: 'HTML',
+          disable_web_page_preview: true
+        });
+      }
+      pendingImageUpdate.delete(msg.from.id);
+      return;
+    }
     if (msg.chat.type === 'private') {
       console.log(`[message][private] from=${msg.from?.id} chat=${msg.chat.id} text="${msg.text}"`);
     }
@@ -641,7 +729,7 @@ bot.on('callback_query', async (query) => {
         const pctText = Math.round(pct * 100);
         {
           const caption = `${getUsernameLabel(from)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`;
-          await bot.sendPhoto(chatId, SNAP_IMAGE_URL, { parse_mode: 'HTML', caption: addFooter(caption) });
+          await bot.sendPhoto(chatId, getImageUrl('snap'), { parse_mode: 'HTML', caption: addFooter(caption) });
         }
       } else {
         const mustBePositive = current && Number(current.length_cm) === 0;
@@ -654,7 +742,7 @@ bot.on('callback_query', async (query) => {
         const sign = delta >= 0 ? '+' : '';
         {
           const caption = `${getUsernameLabel(from)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`;
-          const imageUrl = delta < 0 ? SHRUNK_IMAGE_URL : GROW_IMAGE_URL;
+          const imageUrl = delta < 0 ? getImageUrl('shrunk') : getImageUrl('grow');
           await bot.sendPhoto(chatId, imageUrl, { parse_mode: 'HTML', caption: addFooter(caption) });
         }
       }
@@ -757,6 +845,36 @@ bot.on('callback_query', async (query) => {
     }
     return;
   }
+  // Admin image update selection
+  if (data.startsWith('imgupd:')) {
+    try {
+      if (fromId !== ADMIN_USER_ID) {
+        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Not authorized.', show_alert: true });
+        return;
+      }
+      const key = data.split(':')[1];
+      const valid = ['grow', 'shrunk', 'snap', 'attack', 'attack_resolved', 'wank'];
+      if (!valid.includes(key)) {
+        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Unknown image key.' });
+        return;
+      }
+      pendingImageUpdate.set(fromId, { key });
+      const label = key.replace(/_/g, ' ');
+      const prompt = `Send a photo or image URL to set the ${label} image.\nCurrent: ${getImageUrl(key)}`;
+      await bot.sendMessage(chatId, addFooter(prompt), {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        reply_markup: { force_reply: true }
+      });
+      if (query.id) await bot.answerCallbackQuery(query.id);
+    } catch (e) {
+      console.error('imgupd error', e);
+      if (query.id) {
+        try { await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' }); } catch {}
+      }
+    }
+    return;
+  }
   // Handle paid grow option selection in DM
   // Handle paid grow option selection in DM
   if (data.startsWith('paygrow:')) {
@@ -845,7 +963,7 @@ bot.on('callback_query', async (query) => {
       await bot.editMessageMedia(
         {
           type: 'photo',
-          media: ATTACK_RESOLVED_IMAGE_URL,
+            media: getImageUrl('attack_resolved'),
           caption: addFooter(baseText),
           parse_mode: 'HTML'
         },

@@ -77,6 +77,13 @@ export async function initSchema() {
         fulfilled_at timestamptz
       );
     `);
+    await client.query(`
+      create table if not exists pf_images (
+        key text primary key,
+        url text not null,
+        updated_at timestamptz not null default now()
+      );
+    `);
   } finally {
     client.release();
   }
@@ -415,6 +422,45 @@ export async function expirePayment(id) {
     `update pf_payments set status='expired' where id=$1 and status='pending'`,
     [id]
   );
+}
+
+// Images config
+export async function ensureImageDefaults(defaultsMap) {
+  const keys = Object.keys(defaultsMap || {});
+  if (keys.length === 0) return;
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    for (const k of keys) {
+      const url = defaultsMap[k];
+      await client.query(
+        `insert into pf_images (key, url) values ($1, $2) on conflict (key) do nothing`,
+        [k, url]
+      );
+    }
+    await client.query('commit');
+  } catch (e) {
+    try { await client.query('rollback'); } catch {}
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getAllImages() {
+  const res = await pool.query(`select key, url from pf_images`);
+  return res.rows;
+}
+
+export async function setImageUrl(key, url) {
+  const res = await pool.query(
+    `insert into pf_images (key, url, updated_at)
+     values ($1, $2, now())
+     on conflict (key) do update set url = excluded.url, updated_at = now()
+     returning key, url`,
+    [key, url]
+  );
+  return res.rows[0];
 }
 
 

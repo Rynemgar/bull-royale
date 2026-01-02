@@ -250,9 +250,12 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
     }
   } catch (err) {
     console.error('grow error', err);
-    {
-      const caption = 'Something went wrong processing /grow.';
+    const caption = 'Something went wrong processing /grow.';
+    try {
       await bot.sendPhoto(chatId, getImageUrl('grow'), { parse_mode: 'HTML', caption: addFooter(caption) });
+    } catch (e) {
+      console.error('sendPhoto fallback failed', e);
+      await sendWithFooter(chatId, caption);
     }
   }
 });
@@ -624,16 +627,18 @@ bot.on('message', async (msg) => {
         let newUrl = null;
         if (Array.isArray(msg.photo) && msg.photo.length > 0) {
           const best = msg.photo.reduce((a, b) => ((a.file_size || 0) > (b.file_size || 0) ? a : b));
-          try {
-            const file = await bot.getFile(best.file_id);
-            if (file && file.file_path) {
-              newUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
-            }
-          } catch (e) {
-            console.error('getFile failed for admin image update', e);
-          }
+          // Store the Telegram file_id so Telegram can reuse the uploaded file directly
+          newUrl = best.file_id;
         } else if (typeof msg.text === 'string' && /^https?:\/\//i.test(msg.text.trim())) {
-          newUrl = msg.text.trim();
+          const candidate = msg.text.trim();
+          if (/^https?:\/\/api\.telegram\.org\//i.test(candidate)) {
+            await bot.sendMessage(msg.chat.id, addFooter('Please upload the image directly or provide an external HTTP(S) image URL. Telegram file URLs are not supported.'), {
+              parse_mode: 'HTML',
+              disable_web_page_preview: true
+            });
+            return;
+          }
+          newUrl = candidate;
         }
         if (!newUrl) {
           await bot.sendMessage(msg.chat.id, addFooter('Please send a photo or a valid http(s) URL.'), {
@@ -644,10 +649,26 @@ bot.on('message', async (msg) => {
         }
         await setImageUrl(key, newUrl);
         await reloadImagesCache();
+        // Try to delete the admin's reply message to keep the chat clean
         try {
-          await bot.sendPhoto(msg.chat.id, getImageUrl(key), withGrowButton({ caption: addFooter(`Updated ${label} image.`), parse_mode: 'HTML' }));
-        } catch {
-          await bot.sendMessage(msg.chat.id, addFooter(`Updated ${label} image to:\n${newUrl}`), {
+          await bot.deleteMessage(msg.chat.id, msg.message_id);
+        } catch (e) {
+          console.warn('Could not delete admin update reply message:', e?.message || e);
+        }
+        // Update the original prompt message to indicate success
+        try {
+          await bot.editMessageText(
+            addFooter(`✅ Updated ${label} image.`),
+            {
+              chat_id: state.chatId,
+              message_id: state.replyToMessageId,
+              parse_mode: 'HTML',
+              disable_web_page_preview: true
+            }
+          );
+        } catch (e) {
+          // Fallback: send a separate confirmation message
+          await bot.sendMessage(msg.chat.id, addFooter(`✅ Updated ${label} image.`), {
             parse_mode: 'HTML',
             disable_web_page_preview: true
           });

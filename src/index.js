@@ -632,19 +632,71 @@ bot.on('message', async (msg) => {
         } else if (typeof msg.text === 'string' && /^https?:\/\//i.test(msg.text.trim())) {
           const candidate = msg.text.trim();
           if (/^https?:\/\/api\.telegram\.org\//i.test(candidate)) {
-            await bot.sendMessage(msg.chat.id, addFooter('Please upload the image directly or provide an external HTTP(S) image URL. Telegram file URLs are not supported.'), {
-              parse_mode: 'HTML',
-              disable_web_page_preview: true
-            });
+            // Reject Telegram file URLs for upload; delete reply and update the original prompt with guidance and current value
+            try { await bot.deleteMessage(msg.chat.id, msg.message_id); } catch (e) {}
+            let currentRef = getImageUrl(key);
+            let displayUrl = currentRef || '';
+            if (!/^https?:\/\//i.test(displayUrl) && displayUrl) {
+              try {
+                const f = await bot.getFile(displayUrl);
+                if (f && f.file_path) {
+                  displayUrl = `https://api.telegram.org/file/bot${token}/${f.file_path}`;
+                }
+              } catch {}
+            }
+            const prompt = `Send a photo or image URL to set the ${label} image.\n` +
+              `Current: ${displayUrl || '(none)'}`;
+            try {
+              await bot.editMessageText(
+                addFooter(prompt),
+                {
+                  chat_id: state.chatId,
+                  message_id: state.replyToMessageId,
+                  parse_mode: 'HTML',
+                  disable_web_page_preview: true
+                }
+              );
+            } catch {
+              await bot.sendMessage(msg.chat.id, addFooter(prompt), {
+                parse_mode: 'HTML',
+                disable_web_page_preview: true
+              });
+            }
             return;
           }
           newUrl = candidate;
         }
         if (!newUrl) {
-          await bot.sendMessage(msg.chat.id, addFooter('Please send a photo or a valid http(s) URL.'), {
-            parse_mode: 'HTML',
-            disable_web_page_preview: true
-          });
+          // No valid input: delete reply and re-show the prompt with current value
+          try { await bot.deleteMessage(msg.chat.id, msg.message_id); } catch (e) {}
+          let currentRef = getImageUrl(key);
+          let displayUrl = currentRef || '';
+          if (!/^https?:\/\//i.test(displayUrl) && displayUrl) {
+            try {
+              const f = await bot.getFile(displayUrl);
+              if (f && f.file_path) {
+                displayUrl = `https://api.telegram.org/file/bot${token}/${f.file_path}`;
+              }
+            } catch {}
+          }
+          const prompt = `Send a photo or image URL to set the ${label} image.\n` +
+            `Current: ${displayUrl || '(none)'}`;
+          try {
+            await bot.editMessageText(
+              addFooter(prompt),
+              {
+                chat_id: state.chatId,
+                message_id: state.replyToMessageId,
+                parse_mode: 'HTML',
+                disable_web_page_preview: true
+              }
+            );
+          } catch {
+            await bot.sendMessage(msg.chat.id, addFooter(prompt), {
+              parse_mode: 'HTML',
+              disable_web_page_preview: true
+            });
+          }
           return;
         }
         await setImageUrl(key, newUrl);

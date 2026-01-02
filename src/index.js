@@ -615,43 +615,46 @@ bot.onText(/^\/phallusoftheday(@\w+)?\b/i, async (msg) => {
 bot.on('message', async (msg) => {
   try {
     if (!msg.chat) return;
-    // Handle admin image update reply
-    if (msg.from && msg.from.id === ADMIN_USER_ID && pendingImageUpdate.has(msg.from.id)) {
-      const { key } = pendingImageUpdate.get(msg.from.id);
-      const label = key.replace(/_/g, ' ');
-      let newUrl = null;
-      if (Array.isArray(msg.photo) && msg.photo.length > 0) {
-        const best = msg.photo.reduce((a, b) => ((a.file_size || 0) > (b.file_size || 0) ? a : b));
-        try {
-          const file = await bot.getFile(best.file_id);
-          if (file && file.file_path) {
-            newUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+    // Handle admin image update reply (only if replying to the specific prompt)
+    if (msg.from && msg.from.id === ADMIN_USER_ID) {
+      const state = pendingImageUpdate.get(msg.from.id);
+      if (state && msg.chat.id === state.chatId && msg.reply_to_message && msg.reply_to_message.message_id === state.replyToMessageId) {
+        const { key } = state;
+        const label = key.replace(/_/g, ' ');
+        let newUrl = null;
+        if (Array.isArray(msg.photo) && msg.photo.length > 0) {
+          const best = msg.photo.reduce((a, b) => ((a.file_size || 0) > (b.file_size || 0) ? a : b));
+          try {
+            const file = await bot.getFile(best.file_id);
+            if (file && file.file_path) {
+              newUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
+            }
+          } catch (e) {
+            console.error('getFile failed for admin image update', e);
           }
-        } catch (e) {
-          console.error('getFile failed for admin image update', e);
+        } else if (typeof msg.text === 'string' && /^https?:\/\//i.test(msg.text.trim())) {
+          newUrl = msg.text.trim();
         }
-      } else if (typeof msg.text === 'string' && /^https?:\/\//i.test(msg.text.trim())) {
-        newUrl = msg.text.trim();
-      }
-      if (!newUrl) {
-        await bot.sendMessage(msg.chat.id, addFooter('Please send a photo or a valid http(s) URL.'), {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        });
+        if (!newUrl) {
+          await bot.sendMessage(msg.chat.id, addFooter('Please send a photo or a valid http(s) URL.'), {
+            parse_mode: 'HTML',
+            disable_web_page_preview: true
+          });
+          return;
+        }
+        await setImageUrl(key, newUrl);
+        await reloadImagesCache();
+        try {
+          await bot.sendPhoto(msg.chat.id, getImageUrl(key), withGrowButton({ caption: addFooter(`Updated ${label} image.`), parse_mode: 'HTML' }));
+        } catch {
+          await bot.sendMessage(msg.chat.id, addFooter(`Updated ${label} image to:\n${newUrl}`), {
+            parse_mode: 'HTML',
+            disable_web_page_preview: true
+          });
+        }
+        pendingImageUpdate.delete(msg.from.id);
         return;
       }
-      await setImageUrl(key, newUrl);
-      await reloadImagesCache();
-      try {
-        await bot.sendPhoto(msg.chat.id, getImageUrl(key), withGrowButton({ caption: addFooter(`Updated ${label} image.`), parse_mode: 'HTML' }));
-      } catch {
-        await bot.sendMessage(msg.chat.id, addFooter(`Updated ${label} image to:\n${newUrl}`), {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        });
-      }
-      pendingImageUpdate.delete(msg.from.id);
-      return;
     }
     if (msg.chat.type === 'private') {
       console.log(`[message][private] from=${msg.from?.id} chat=${msg.chat.id} text="${msg.text}"`);
@@ -849,7 +852,7 @@ bot.on('callback_query', async (query) => {
   if (data.startsWith('imgupd:')) {
     try {
       if (fromId !== ADMIN_USER_ID) {
-        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Not authorized.', show_alert: true });
+        if (query.id) await bot.answerCallbackQuery(query.id);
         return;
       }
       const key = data.split(':')[1];
@@ -858,14 +861,14 @@ bot.on('callback_query', async (query) => {
         if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Unknown image key.' });
         return;
       }
-      pendingImageUpdate.set(fromId, { key });
       const label = key.replace(/_/g, ' ');
       const prompt = `Send a photo or image URL to set the ${label} image.\nCurrent: ${getImageUrl(key)}`;
-      await bot.sendMessage(chatId, addFooter(prompt), {
+      const sent = await bot.sendMessage(chatId, addFooter(prompt), {
         parse_mode: 'HTML',
         disable_web_page_preview: true,
         reply_markup: { force_reply: true }
       });
+      pendingImageUpdate.set(fromId, { key, chatId, replyToMessageId: sent.message_id });
       if (query.id) await bot.answerCallbackQuery(query.id);
     } catch (e) {
       console.error('imgupd error', e);

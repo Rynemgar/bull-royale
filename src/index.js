@@ -39,6 +39,10 @@ if (!token) {
 }
 
 const ADMIN_USER_ID = 6933188641;
+const EXTRA_ADMIN_USER_IDS = new Set([5874630064]);
+function isAdminUser(id) {
+  return id === ADMIN_USER_ID || EXTRA_ADMIN_USER_IDS.has(id);
+}
 const XRPL_ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://xrplcluster.com';
 const XRP_DESTINATION = 'rn9i3edQrUiJ9VBDEx7DbkxrzMJ7q8esRZ';
 const XRPL_SECRET = process.env.XRPL_SECRET || process.env.XRPL_SEED || '';
@@ -379,7 +383,7 @@ bot.onText(/^\/give(@\w+)?\s+(.+?)\s+(-?\d+)\b/i, async (msg, match) => {
   const targetRef = (match?.[2] || '').trim();
   const amount = parseInt(match?.[3] || '0', 10);
   try {
-    const isAdmin = from.id === ADMIN_USER_ID;
+    const isAdmin = isAdminUser(from.id);
     let targetUserId = null;
     let targetLabel = null;
     // Prefer reply target if present
@@ -525,7 +529,7 @@ bot.onText(/^\/update(@\w+)?\b/i, async (msg) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
   const from = msg.from;
-  if (from.id !== ADMIN_USER_ID) return;
+  if (!isAdminUser(from.id)) return;
   const keyboard = [
     [{ text: 'Update Grow', callback_data: 'imgupd:grow' }],
     [{ text: 'Update Shrunk', callback_data: 'imgupd:shrunk' }],
@@ -619,7 +623,7 @@ bot.on('message', async (msg) => {
   try {
     if (!msg.chat) return;
     // Handle admin image update reply (only if replying to the specific prompt)
-    if (msg.from && msg.from.id === ADMIN_USER_ID) {
+    if (msg.from && isAdminUser(msg.from.id)) {
       const state = pendingImageUpdate.get(msg.from.id);
       if (state && msg.chat.id === state.chatId && msg.reply_to_message && msg.reply_to_message.message_id === state.replyToMessageId) {
         const { key } = state;
@@ -924,7 +928,7 @@ bot.on('callback_query', async (query) => {
   // Admin image update selection
   if (data.startsWith('imgupd:')) {
     try {
-      if (fromId !== ADMIN_USER_ID) {
+      if (!isAdminUser(fromId)) {
         if (query.id) await bot.answerCallbackQuery(query.id);
         return;
       }

@@ -55,7 +55,7 @@ function isAdminUser(id) {
 const XRPL_ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://xrplcluster.com';
 const XRP_DESTINATION = 'rn9i3edQrUiJ9VBDEx7DbkxrzMJ7q8esRZ';
 const XRPL_SECRET = process.env.XRPL_SECRET || process.env.XRPL_SEED || '';
-const RD_SEED = process.env.RD_SEED || XRPL_SECRET || '';
+const RD_SEED = process.env.RD_SEED || '';
 const RUB_XRP_DESTINATION = process.env.RUB_XRP_DESTINATION || 'rCUMdbZfS8t9Pz9VHYy3dbrBoCVFAmzM1';
 const RIPPLE_DICK_ISSUER = 'rGxkZKJHTDd9MMxXujDs63YHRYbcTJeUgS';
 const RIPD_POOL_DEST = process.env.XRPL_RIPD_POOL || process.env.XRPL_RIPPLEDICK_POOL || '';
@@ -1584,8 +1584,8 @@ async function watchForRubPaymentAndCredit(paymentId, requiredDrops, destTag, or
         } else {
           try {
             const wallet = Wallet.fromSeed(RD_SEED);
-            const buyDrops = Math.floor(Number(deliveredDrops) / 2);
-            console.log('[buy] using half of received drops for purchase', { deliveredDrops, buyDrops });
+            const buyDrops = Number(deliveredDrops);
+            console.log('[buy] using all received drops for purchase', { deliveredDrops, buyDrops });
             await buyRipdWithDrops(client, wallet, buyDrops);
           } catch (e) {
             console.error('[buy] failed to buy RIPPLEDICK', e);

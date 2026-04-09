@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import crypto from 'crypto';
 import express from 'express';
+import https from 'https';
 import { Client as XrplClient, xrpToDrops, Wallet } from 'xrpl';
 import TelegramBot from 'node-telegram-bot-api';
 import {
@@ -231,20 +232,37 @@ function formatIouValue(x) {
 
 async function fetchRipdXrpPrice() {
   if (!HORIZON_API_KEY) throw new Error('HAPI is not set');
-  if (typeof fetch !== 'function') throw new Error('fetch is not available in this Node runtime');
   const url = `${HORIZON_BASE_URL}/v1/tokens/${encodeURIComponent(RIPPLEDICK_TOKEN_ID)}/market-summary`;
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'X-Horizon-Api-Key': HORIZON_API_KEY,
-      Accept: 'application/json'
+  const headers = { 'X-Horizon-Api-Key': HORIZON_API_KEY, Accept: 'application/json' };
+
+  let json = null;
+  if (typeof fetch === 'function') {
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Horizon error ${res.status}: ${text.slice(0, 200)}`);
     }
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Horizon error ${res.status}: ${text.slice(0, 200)}`);
+    json = await res.json();
+  } else {
+    json = await new Promise((resolve, reject) => {
+      const req = https.request(url, { method: 'GET', headers }, (res) => {
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            return reject(new Error(`Horizon error ${res.statusCode}: ${String(body).slice(0, 200)}`));
+          }
+          try {
+            resolve(JSON.parse(body));
+          } catch (e) {
+            reject(new Error('Horizon returned invalid JSON'));
+          }
+        });
+      });
+      req.on('error', reject);
+      req.end();
+    });
   }
-  const json = await res.json();
   const price = json?.data?.market?.xrp?.price;
   const n = Number(price);
   if (!Number.isFinite(n) || n <= 0) throw new Error('Invalid Horizon xrp price');
@@ -418,6 +436,7 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
   await ensureUser(chatId, user);
   const utcNow = getUtcDate();
 
+  let consumedPaid = false;
   try {
     const state = await getRubState(chatId, userId);
     const xrplAddr = state?.xrpl_address || null;
@@ -441,6 +460,7 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
         await sendWithFooter(chatId, `You're out of rubs. Try again after your free cooldown resets.`);
         return;
       }
+      consumedPaid = true;
       used = 'paid';
     } else {
       const next = new Date(lastFreeAt.getTime() + 24 * 60 * 60 * 1000);
@@ -488,7 +508,18 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
     );
   } catch (e) {
     console.error('rub error', e);
-    await sendWithFooter(chatId, 'Could not process /rub right now.');
+    if (consumedPaid) {
+      try { await addPaidFlips(chatId, userId, 1); } catch {}
+    }
+    const msgText = String(e?.message || '');
+    const hint =
+      msgText.includes('HAPI is not set') ? '\nMissing server env: <code>HAPI</code>.' :
+      msgText.startsWith('Horizon error') ? '\nHorizon API call failed (check token id / base URL / key).' :
+      msgText.includes('Invalid Horizon') ? '\nHorizon returned no valid XRP price.' :
+      msgText.includes('RD_SEED is not set') ? '\nMissing server env: <code>RD_SEED</code>.' :
+      msgText.includes('XRPL send failed') ? '\nXRPL payment failed (wallet balance / trustlines / network).' :
+      '';
+    await sendWithFooter(chatId, `Could not process /rub right now.${hint}`);
   }
 });
 

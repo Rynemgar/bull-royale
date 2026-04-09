@@ -69,7 +69,9 @@ function deriveHorizonRestBaseUrl() {
       const u = new URL(v);
       const proto = u.protocol === 'wss:' ? 'https:' : u.protocol === 'ws:' ? 'http:' : u.protocol;
       if (proto !== 'https:' && proto !== 'http:') return null;
-      return `${proto}//${u.host}`.replace(/\/+$/, '');
+      // Keep any path on explicit REST base URLs so callers can pass ".../v1" if needed.
+      const path = (u.pathname || '').replace(/\/+$/, '');
+      return `${proto}//${u.host}${path}`.replace(/\/+$/, '');
     } catch {
       if (/^https?:\/\//i.test(v)) return v.replace(/\/+$/, '');
       return null;
@@ -84,7 +86,9 @@ function deriveHorizonRestBaseUrl() {
     const u = new URL(ws);
     const proto = u.protocol === 'wss:' ? 'https:' : u.protocol === 'ws:' ? 'http:' : u.protocol;
     if (proto !== 'https:' && proto !== 'http:') return null;
-    return `${proto}//${u.host}`.replace(/\/+$/, '');
+    // If ws looks like "/v1/ws/...", infer "/v1" prefix.
+    const prefix = (u.pathname || '').startsWith('/v1/ws/') ? '/v1' : '';
+    return `${proto}//${u.host}${prefix}`.replace(/\/+$/, '');
   } catch {
     return null;
   }
@@ -262,37 +266,61 @@ async function fetchRipdXrpPrice() {
   if (!HORIZON_API_KEY) throw new Error('HAPI is not set');
   // Some routers don't match "%3A" in path params reliably; keep ":" unescaped.
   const tokenIdPath = encodeURIComponent(RIPPLEDICK_TOKEN_ID).replace(/%3A/gi, ':');
-  const url = `${HORIZON_BASE_URL}/v1/tokens/${tokenIdPath}/market-summary`;
+  const base = String(HORIZON_BASE_URL || '').replace(/\/+$/, '');
   const headers = { 'X-Horizon-Api-Key': HORIZON_API_KEY, Accept: 'application/json' };
 
-  let json = null;
-  if (typeof fetch === 'function' && /^https?:\/\//i.test(url)) {
-    const res = await fetch(url, { method: 'GET', headers });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Horizon error ${res.status}: ${text.slice(0, 200)}`);
-    }
-    json = await res.json();
+  const candidates = [];
+  if (base.endsWith('/v1')) {
+    candidates.push(`${base}/tokens/${tokenIdPath}/market-summary`);
   } else {
-    json = await new Promise((resolve, reject) => {
-      const req = https.request(url, { method: 'GET', headers }, (res) => {
-        let body = '';
-        res.on('data', (c) => { body += c; });
-        res.on('end', () => {
-          if (res.statusCode < 200 || res.statusCode >= 300) {
-            return reject(new Error(`Horizon error ${res.statusCode}: ${String(body).slice(0, 200)}`));
-          }
-          try {
-            resolve(JSON.parse(body));
-          } catch (e) {
-            reject(new Error('Horizon returned invalid JSON'));
-          }
-        });
-      });
-      req.on('error', reject);
-      req.end();
-    });
+    candidates.push(`${base}/v1/tokens/${tokenIdPath}/market-summary`);
   }
+  // Fallback: in case base already includes "/v1" but wasn't detected, or API is mounted at root.
+  candidates.push(`${base}/tokens/${tokenIdPath}/market-summary`);
+  candidates.push(`${base}/v1/tokens/${tokenIdPath}/market-summary`);
+
+  let json = null;
+  let lastErr = null;
+  for (const url of candidates) {
+    try {
+      if (typeof fetch === 'function' && /^https?:\/\//i.test(url)) {
+        const res = await fetch(url, { method: 'GET', headers });
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(`Horizon error ${res.status}: ${text.slice(0, 200)} (url=${url})`);
+        }
+        json = await res.json();
+      } else {
+        json = await new Promise((resolve, reject) => {
+          const req = https.request(url, { method: 'GET', headers }, (res) => {
+            let body = '';
+            res.on('data', (c) => { body += c; });
+            res.on('end', () => {
+              if (res.statusCode < 200 || res.statusCode >= 300) {
+                return reject(new Error(`Horizon error ${res.statusCode}: ${String(body).slice(0, 200)} (url=${url})`));
+              }
+              try {
+                resolve(JSON.parse(body));
+              } catch (e) {
+                reject(new Error(`Horizon returned invalid JSON (url=${url})`));
+              }
+            });
+          });
+          req.on('error', reject);
+          req.end();
+        });
+      }
+      // Success
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+      json = null;
+      continue;
+    }
+  }
+  if (!json) throw lastErr || new Error('Horizon request failed');
+
   const price = json?.data?.market?.xrp?.price;
   const n = Number(price);
   if (!Number.isFinite(n) || n <= 0) throw new Error('Invalid Horizon xrp price');

@@ -589,9 +589,10 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
       const ripdAmount = prizeXrp / priceXrpPerRipd;
       const txHash = await sendRipdPrize(xrplAddr, ripdAmount);
       return (
-        `${label} rubbed well.  Cum went everywhere! Won${rubbingNote}!\n` +
+        `🔥 YOU WON! 🔥\n\n` +
+        `${label} BUST-a-NUT 🍆💧 Cum went EVERYWHERE! 💧🍆\n\n` +
         `Prize value: ~${formatXrp(prizeXrp)} XRP\n` +
-        `RD sent: ~${formatIouValue(ripdAmount)} RIPPLEDICK\n` +
+        `RD sent: ~${formatIouValue(ripdAmount)} RIPPLEDICK\n\n` +
         `Tx: <code>${txHash}</code>`
       );
     })();

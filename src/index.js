@@ -564,8 +564,7 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
     }
 
     const label = getUsernameLabel(user);
-    const rubbingNote = used === 'paid' ? '' : '';
-    const rubbingText = `${label} is rubbing their Rippledick...${rubbingNote}`;
+    const rubbingText = `${label} is rubbing their Rippledick...`;
     const rubbingImg = getOptionalImageUrl('rub_rubbing');
     const rubbingMsg = rubbingImg
       ? await bot.sendPhoto(chatId, rubbingImg, { parse_mode: 'HTML', caption: addFooter(rubbingText) })

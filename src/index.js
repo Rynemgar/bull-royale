@@ -506,7 +506,7 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
 
     const win = Math.random() < 0.5;
     if (!win) {
-      const note = used === 'paid' ? ' (paid rub)' : '';
+      const note = used === 'paid' ? '' : '';
       await sendWithFooter(chatId, `${getUsernameLabel(user)} rubs... and goes flacid${note}. Better luck next time.`);
       return;
     }

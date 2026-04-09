@@ -29,7 +29,15 @@ import {
   expirePayment,
   ensureImageDefaults,
   getAllImages,
-  setImageUrl
+  setImageUrl,
+  setXrplAddress,
+  getRubState,
+  consumePaidFlip,
+  recordFreeRub,
+  addPaidFlips,
+  createRubPayment,
+  fulfillRubPayment,
+  expireRubPayment
 } from './db.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -46,8 +54,13 @@ function isAdminUser(id) {
 const XRPL_ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://xrplcluster.com';
 const XRP_DESTINATION = 'rn9i3edQrUiJ9VBDEx7DbkxrzMJ7q8esRZ';
 const XRPL_SECRET = process.env.XRPL_SECRET || process.env.XRPL_SEED || '';
+const RD_SEED = process.env.RD_SEED || XRPL_SECRET || '';
 const RIPPLE_DICK_ISSUER = 'rGxkZKJHTDd9MMxXujDs63YHRYbcTJeUgS';
 const RIPD_POOL_DEST = process.env.XRPL_RIPD_POOL || process.env.XRPL_RIPPLEDICK_POOL || '';
+const RUB_GROUP_ID = -1003387341298;
+const HORIZON_API_KEY = process.env.HAPI || '';
+const HORIZON_BASE_URL = (process.env.HORIZON_BASE_URL || 'https://api.horizon.market').replace(/\/+$/, '');
+const RIPPLEDICK_TOKEN_ID = process.env.RIPPLEDICK_TOKEN_ID || `RIPPLEDICK.${RIPPLE_DICK_ISSUER}`;
 
 function asciiCurrencyCode(name) {
   const bytes = Buffer.from(name, 'ascii');
@@ -148,6 +161,19 @@ function buildGrowDeepLink(originChatId) {
   }
 }
 
+function buildRubDeepLink(originChatId) {
+  if (!BOT_USERNAME) return undefined;
+  try {
+    const payload = `rub:${originChatId}`;
+    const encoded = Buffer.from(payload, 'utf8').toString('base64url');
+    const param = `g__${encoded}`;
+    return `https://t.me/${BOT_USERNAME}?start=${param}`;
+  } catch (e) {
+    console.error('[buildRubDeepLink] failed', e);
+    return `https://t.me/${BOT_USERNAME}`;
+  }
+}
+
 async function sendPaidGrowMenu(userId, originChatId) {
   console.log(`[paid menu] send options: user=${userId} originChatId=${originChatId}`);
   const lines =
@@ -166,6 +192,98 @@ async function sendPaidGrowMenu(userId, originChatId) {
     disable_web_page_preview: true,
     reply_markup: { inline_keyboard: buttons }
   });
+}
+
+async function sendRubBuyMenu(userId, originChatId) {
+  const lines =
+    `Buy extra /rub usage (each rub is 0.1 XRP).\n` +
+    `These bypass the 24h cooldown.\n\n` +
+    `Select how many rubs to buy:`;
+  const buttons = [
+    [{ text: '1 rub (0.1 XRP)', callback_data: `payrub:${originChatId}:1` }],
+    [{ text: '5 rubs (0.5 XRP)', callback_data: `payrub:${originChatId}:5` }],
+    [{ text: '10 rubs (1.0 XRP)', callback_data: `payrub:${originChatId}:10` }]
+  ];
+  await bot.sendMessage(userId, addFooter(lines), {
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
+    reply_markup: { inline_keyboard: buttons }
+  });
+}
+
+function isValidXrplAddress(addr) {
+  const a = (addr || '').trim();
+  return /^r[1-9A-HJ-NP-Za-km-z]{25,34}$/.test(a);
+}
+
+function formatXrp(x) {
+  const n = Number(x);
+  if (!Number.isFinite(n)) return '0';
+  return n.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function formatIouValue(x) {
+  const n = Number(x);
+  if (!Number.isFinite(n) || n <= 0) return '0.000001';
+  return n.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+async function fetchRipdXrpPrice() {
+  if (!HORIZON_API_KEY) throw new Error('HAPI is not set');
+  if (typeof fetch !== 'function') throw new Error('fetch is not available in this Node runtime');
+  const url = `${HORIZON_BASE_URL}/v1/tokens/${encodeURIComponent(RIPPLEDICK_TOKEN_ID)}/market-summary`;
+  const res = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'X-Horizon-Api-Key': HORIZON_API_KEY,
+      Accept: 'application/json'
+    }
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Horizon error ${res.status}: ${text.slice(0, 200)}`);
+  }
+  const json = await res.json();
+  const price = json?.data?.market?.xrp?.price;
+  const n = Number(price);
+  if (!Number.isFinite(n) || n <= 0) throw new Error('Invalid Horizon xrp price');
+  return n;
+}
+
+async function buyRipdWithDrops(client, wallet, spendDrops) {
+  await ensureTrustline(client, wallet, RIPPLEDICK_HEX, RIPPLE_DICK_ISSUER);
+  try {
+    await placePaymentBuyRipd(client, wallet, spendDrops);
+  } catch (e) {
+    console.warn('[buy] Payment path buy failed, falling back to OfferCreate', e?.message || e);
+    await placeMarketBuyRipd(client, wallet, spendDrops);
+  }
+}
+
+async function sendRipdPrize(destAddress, ripdAmount) {
+  if (!RD_SEED) throw new Error('RD_SEED is not set');
+  const client = new XrplClient(XRPL_ENDPOINT);
+  await client.connect();
+  try {
+    const wallet = Wallet.fromSeed(RD_SEED);
+    await ensureTrustline(client, wallet, RIPPLEDICK_HEX, RIPPLE_DICK_ISSUER);
+    const tx = {
+      TransactionType: 'Payment',
+      Account: wallet.address,
+      Destination: destAddress,
+      Amount: {
+        currency: RIPPLEDICK_HEX,
+        issuer: RIPPLE_DICK_ISSUER,
+        value: formatIouValue(ripdAmount)
+      }
+    };
+    const result = await client.submitAndWait(tx, { wallet });
+    const engine = result?.result?.engine_result;
+    if (engine && engine !== 'tesSUCCESS') throw new Error(`XRPL send failed: ${engine}`);
+    return result?.result?.hash || 'unknown';
+  } finally {
+    try { await client.disconnect(); } catch {}
+  }
 }
 
 async function notifyBotAddedToGroup(chat, actor) {
@@ -264,6 +382,115 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
   }
 });
 
+// /wallet <xrplAddress> — set payout address for /rub prizes
+bot.onText(/^\/wallet(@\w+)?\s+([^\s]+)\b/i, async (msg, match) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  const user = msg.from;
+  const addr = (match?.[2] || '').trim();
+  await ensureUser(chatId, user);
+  if (!isValidXrplAddress(addr)) {
+    await sendWithFooter(chatId, `That doesn't look like a valid XRPL address.\nExample: <code>r....</code>`);
+    return;
+  }
+  try {
+    await setXrplAddress(chatId, user.id, addr);
+    await sendWithFooter(chatId, `Saved your XRPL address:\n<code>${addr}</code>`);
+  } catch (e) {
+    console.error('wallet set error', e);
+    await sendWithFooter(chatId, 'Could not save your address.');
+  }
+});
+
+// /rub — 50/50 to win RIPPLEDICK prizes (RippleDick group only)
+bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  const user = msg.from;
+  const userId = user.id;
+
+  if (chatId !== RUB_GROUP_ID) {
+    await sendWithFooter(chatId, 'This command is only usable in the RippleDick group.');
+    return;
+  }
+
+  await ensureUser(chatId, user);
+  const utcNow = getUtcDate();
+
+  try {
+    const state = await getRubState(chatId, userId);
+    const xrplAddr = state?.xrpl_address || null;
+    const paidFlips = Number(state?.paid_flips || 0);
+    const lastFreeAt = state?.last_rub_free_at ? new Date(state.last_rub_free_at) : null;
+
+    if (!xrplAddr) {
+      await sendWithFooter(chatId, `Set your XRPL address first so I can reward you for cumming.\nUse: <code>/wallet r....</code>`);
+      return;
+    }
+
+    const freeReady = !lastFreeAt || (utcNow.getTime() - lastFreeAt.getTime() >= 24 * 60 * 60 * 1000);
+    let used = null; // 'free' | 'paid'
+
+    if (freeReady) {
+      await recordFreeRub(chatId, userId, utcNow);
+      used = 'free';
+    } else if (paidFlips > 0) {
+      const ok = await consumePaidFlip(chatId, userId);
+      if (!ok) {
+        await sendWithFooter(chatId, `You're out of rubs. Try again after your free cooldown resets.`);
+        return;
+      }
+      used = 'paid';
+    } else {
+      const next = new Date(lastFreeAt.getTime() + 24 * 60 * 60 * 1000);
+      const ms = next.getTime() - utcNow.getTime();
+      const hours = Math.max(0, Math.floor(ms / 3600000));
+      const minutes = Math.max(0, Math.floor((ms % 3600000) / 60000));
+      const deepLink = buildRubDeepLink(chatId);
+      const extra = deepLink ? `\n\nBuy extra rubs in DM: tap below.` : '';
+      const opts = deepLink
+        ? { reply_markup: { inline_keyboard: [[{ text: 'Buy rubs (DM)', url: deepLink }]] } }
+        : undefined;
+      await sendWithFooter(chatId, `Cooldown active. Free /rub resets in ${hours}h ${minutes}m.${extra}`, opts);
+      return;
+    }
+
+    const win = Math.random() < 0.5;
+    if (!win) {
+      const note = used === 'paid' ? ' (paid rub)' : '';
+      await sendWithFooter(chatId, `${getUsernameLabel(user)} rubs... and gets nothing${note}. Better luck next time.`);
+      return;
+    }
+
+    const r = Math.random();
+    let prizeXrp = 0.01;
+    if (r < 0.95) {
+      prizeXrp = 0.01 + Math.random() * (0.05 - 0.01);
+    } else if (r < 0.99) {
+      prizeXrp = 0.1 + Math.random() * (0.5 - 0.1);
+    } else if (r < 0.999) {
+      prizeXrp = 1.0;
+    } else {
+      prizeXrp = 5.0;
+    }
+
+    const priceXrpPerRipd = await fetchRipdXrpPrice();
+    const ripdAmount = prizeXrp / priceXrpPerRipd;
+    const txHash = await sendRipdPrize(xrplAddr, ripdAmount);
+    const note = used === 'paid' ? ' (paid flip)' : '';
+    await sendWithFooter(
+      chatId,
+      `${getUsernameLabel(user)} wins${note}!\n` +
+      `Prize value: ~${formatXrp(prizeXrp)} XRP\n` +
+      `RD sent: ~${formatIouValue(ripdAmount)} RIPPLEDICK\n` +
+      `Tx: <code>${txHash}</code>`
+    );
+  } catch (e) {
+    console.error('rub error', e);
+    await sendWithFooter(chatId, 'Could not process /rub right now.');
+  }
+});
+
 // Deep-link start in DM for paid growth
 bot.onText(/^\/start(?:\s+(.+))?/i, async (msg, match) => {
   try {
@@ -273,29 +500,42 @@ bot.onText(/^\/start(?:\s+(.+))?/i, async (msg, match) => {
     console.log(`[start] from user=${user.id} chat=${msg.chat.id} type=${msg.chat.type} text="${msg.text}" param="${rawParam}"`);
     // Decode payload (supports base64url-encoded and legacy plain)
     let originChatId = null;
+    let mode = null; // 'grow' | 'rub'
     if (rawParam.startsWith('g__')) {
       try {
         const decoded = Buffer.from(rawParam.slice(3), 'base64url').toString('utf8');
         console.log(`[start] decoded payload="${decoded}"`);
         if (decoded.startsWith('grow:')) {
           originChatId = Number(decoded.slice(5));
+          mode = 'grow';
+        } else if (decoded.startsWith('rub:')) {
+          originChatId = Number(decoded.slice(4));
+          mode = 'rub';
         }
       } catch (e) {
         console.warn('[start] failed to decode base64url payload', e);
       }
     } else if (rawParam.startsWith('grow:')) {
       originChatId = Number(rawParam.slice(5));
+      mode = 'grow';
+    } else if (rawParam.startsWith('rub:')) {
+      originChatId = Number(rawParam.slice(4));
+      mode = 'rub';
     } else {
       // not our deeplink
       return;
     }
     if (!Number.isFinite(originChatId)) {
       console.warn(`[start] invalid originChatId from param="${rawParam}"`);
-      await bot.sendMessage(msg.chat.id, addFooter('Invalid growth session parameter.'), { parse_mode: 'HTML', disable_web_page_preview: true });
+      await bot.sendMessage(msg.chat.id, addFooter('Invalid session parameter.'), { parse_mode: 'HTML', disable_web_page_preview: true });
       return;
     }
-    console.log(`[start] valid grow deeplink: originChatId=${originChatId}`);
+    console.log(`[start] valid deeplink: mode=${mode} originChatId=${originChatId}`);
     await ensureUser(originChatId, user);
+    if (mode === 'rub') {
+      await sendRubBuyMenu(msg.chat.id, originChatId);
+      return;
+    }
     await sendPaidGrowMenu(msg.chat.id, originChatId);
   } catch (e) {
     console.error('/start grow handler error', e);
@@ -1005,6 +1245,45 @@ bot.on('callback_query', async (query) => {
     }
     return;
   }
+  // Handle /rub flip purchase selection in DM
+  if (data.startsWith('payrub:')) {
+    try {
+      if (msg.chat.type !== 'private') {
+        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Open this in DM.', show_alert: true });
+        return;
+      }
+      const [_tag, originChatIdStr, flipsStr] = data.split(':');
+      const originChatId = Number(originChatIdStr);
+      const flips = Math.max(1, Math.min(100, Math.floor(Number(flipsStr) || 0)));
+      if (!Number.isFinite(originChatId)) {
+        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Invalid session.', show_alert: true });
+        return;
+      }
+      // 0.1 XRP per flip
+      const xrp = flips * 0.1;
+      const drops = Number(xrpToDrops(xrp.toString()));
+      // Use a random destination tag to avoid collisions with other payment flows
+      const destTag = crypto.randomInt(100000, 2147483647);
+      await ensureUser(originChatId, from);
+      const payment = await createRubPayment(originChatId, fromId, flips, drops, destTag);
+      const instructions =
+        `Send <b>${formatXrp(xrp)} XRP</b> to:\n` +
+        `<code>${XRP_DESTINATION}</code>\n` +
+        `Destination Tag: <b>${destTag}</b>\n\n` +
+        `This will be monitored for 10 minutes. When payment is detected, your paid rubs will be added.\n` +
+        `Rubs: <b>${flips}</b>`;
+      await bot.sendMessage(chatId, addFooter(instructions), { parse_mode: 'HTML', disable_web_page_preview: true });
+      if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Waiting for payment...' });
+      watchForRubPaymentAndCredit(payment.id, drops, destTag, originChatId, fromId, flips)
+        .catch(err => console.error('rub payment watcher error', err));
+    } catch (err) {
+      console.error('payrub error', err);
+      if (query.id) {
+        try { await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' }); } catch {}
+      }
+    }
+    return;
+  }
   // Handle accept challenge
   if (!data.startsWith('accept:')) {
     if (query.id) bot.answerCallbackQuery(query.id);
@@ -1159,25 +1438,14 @@ async function watchForPaymentAndCredit(paymentId, requiredDrops, destTag, origi
         }
         if (deliveredDrops !== requiredDrops) return false;
         // Attempt to buy RIPPLEDICK using received XRP (use half of the payment)
-        if (!XRPL_SECRET) {
-          console.warn('[buy] XRPL_SECRET not set; skipping purchase.');
+        if (!RD_SEED) {
+          console.warn('[buy] RD_SEED not set; skipping purchase.');
         } else {
           try {
-            const wallet = Wallet.fromSeed(XRPL_SECRET);
-            if (wallet.address !== XRP_DESTINATION) {
-              console.warn('[buy] Wallet address does not match destination. Using wallet:', wallet.address);
-            }
-            await ensureTrustline(client, wallet, RIPPLEDICK_HEX, RIPPLE_DICK_ISSUER);
-            // Prefer Payment tfPartialPayment to allow partial fills via AMM/path
-            try {
-              const buyDrops = Math.floor(Number(deliveredDrops) / 2);
-              console.log('[buy] using half of received drops for purchase', { deliveredDrops, buyDrops });
-              await placePaymentBuyRipd(client, wallet, buyDrops);
-            } catch (e) {
-              console.warn('[buy] Payment path buy failed, falling back to OfferCreate', e?.message || e);
-              const buyDrops = Math.floor(Number(deliveredDrops) / 2);
-              await placeMarketBuyRipd(client, wallet, buyDrops);
-            }
+            const wallet = Wallet.fromSeed(RD_SEED);
+            const buyDrops = Math.floor(Number(deliveredDrops) / 2);
+            console.log('[buy] using half of received drops for purchase', { deliveredDrops, buyDrops });
+            await buyRipdWithDrops(client, wallet, buyDrops);
           } catch (e) {
             console.error('[buy] failed to buy RIPPLEDICK', e);
           }
@@ -1222,6 +1490,83 @@ async function watchForPaymentAndCredit(paymentId, requiredDrops, destTag, origi
     }, timeoutMs);
   } catch (e) {
     console.error('XRPL subscribe error', e);
+    try { await client.disconnect(); } catch {}
+  }
+}
+
+async function watchForRubPaymentAndCredit(paymentId, requiredDrops, destTag, originChatId, userId, flips) {
+  const client = new XrplClient(XRPL_ENDPOINT);
+  const timeoutMs = 10 * 60 * 1000;
+  await client.connect();
+  try {
+    await client.request({ command: 'subscribe', accounts: [XRP_DESTINATION] });
+    const maybeFulfill = async (tx) => {
+      try {
+        const t = tx?.transaction || tx?.tx || tx;
+        const meta = tx?.meta || tx?.metaData || tx?.metaData;
+        if (!t || t.TransactionType !== 'Payment') return false;
+        if (t.Destination !== XRP_DESTINATION) return false;
+        const tag = t.DestinationTag;
+        if (Number(tag) !== Number(destTag)) return false;
+        let deliveredDrops = null;
+        if (typeof t.Amount === 'string') {
+          deliveredDrops = Number(t.Amount);
+        } else if (meta && (meta.delivered_amount || meta.DeliveredAmount)) {
+          const da = meta.delivered_amount || meta.DeliveredAmount;
+          if (typeof da === 'string') deliveredDrops = Number(da);
+        }
+        if (deliveredDrops !== requiredDrops) return false;
+        // Top up RD supply on purchase
+        if (!RD_SEED) {
+          console.warn('[buy] RD_SEED not set; skipping purchase.');
+        } else {
+          try {
+            const wallet = Wallet.fromSeed(RD_SEED);
+            const buyDrops = Math.floor(Number(deliveredDrops) / 2);
+            console.log('[buy] using half of received drops for purchase', { deliveredDrops, buyDrops });
+            await buyRipdWithDrops(client, wallet, buyDrops);
+          } catch (e) {
+            console.error('[buy] failed to buy RIPPLEDICK', e);
+          }
+        }
+        await addPaidFlips(originChatId, userId, flips);
+        await fulfillRubPayment(paymentId, t.hash || 'unknown');
+        try {
+          await bot.sendMessage(
+            userId,
+            addFooter(`Payment received. Added <b>${flips}</b> paid /rub(s).`),
+            { parse_mode: 'HTML', disable_web_page_preview: true }
+          );
+        } catch {}
+        return true;
+      } catch (e) {
+        console.error('rub maybeFulfill error', e);
+        return false;
+      }
+    };
+    const onTx = async (event) => {
+      const done = await maybeFulfill(event);
+      if (done) {
+        try { await client.request({ command: 'unsubscribe', accounts: [XRP_DESTINATION] }); } catch {}
+        try { await client.disconnect(); } catch {}
+      }
+    };
+    client.on('transaction', onTx);
+    setTimeout(async () => {
+      try {
+        await expireRubPayment(paymentId);
+        client.removeListener('transaction', onTx);
+        try { await client.request({ command: 'unsubscribe', accounts: [XRP_DESTINATION] }); } catch {}
+        try { await client.disconnect(); } catch {}
+        try {
+          await bot.sendMessage(userId, addFooter('No payment detected within 10 minutes. Try again.'), { parse_mode: 'HTML', disable_web_page_preview: true });
+        } catch {}
+      } catch (e) {
+        console.error('rub payment timeout cleanup error', e);
+      }
+    }, timeoutMs);
+  } catch (e) {
+    console.error('XRPL subscribe error (rub)', e);
     try { await client.disconnect(); } catch {}
   }
 }

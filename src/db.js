@@ -25,10 +25,13 @@ export async function initSchema() {
         user_id bigint not null,
         username text,
         first_name text,
+        xrpl_address text,
         length_cm integer not null default 0,
         wins integer not null default 0,
         losses integer not null default 0,
         last_grow_date date null,
+        last_rub_free_at timestamptz null,
+        paid_flips integer not null default 0,
         created_at timestamptz not null default now(),
         primary key (chat_id, user_id)
       );
@@ -36,6 +39,18 @@ export async function initSchema() {
     await client.query(`
       alter table pf_users
       add column if not exists last_grow_button_at timestamptz null
+    `);
+    await client.query(`
+      alter table pf_users
+      add column if not exists xrpl_address text
+    `);
+    await client.query(`
+      alter table pf_users
+      add column if not exists last_rub_free_at timestamptz null
+    `);
+    await client.query(`
+      alter table pf_users
+      add column if not exists paid_flips integer not null default 0
     `);
     await client.query(`
       create table if not exists pf_challenges (
@@ -84,6 +99,21 @@ export async function initSchema() {
         updated_at timestamptz not null default now()
       );
     `);
+    await client.query(`
+      create table if not exists pf_rub_payments (
+        id bigserial primary key,
+        chat_id bigint not null,
+        user_id bigint not null,
+        flips integer not null,
+        amount_drops bigint not null,
+        dest_tag bigint not null,
+        status text not null default 'pending', -- pending | fulfilled | expired | cancelled
+        tx_hash text,
+        created_at timestamptz not null default now(),
+        fulfilled_at timestamptz
+      );
+    `);
+    await client.query(`create index if not exists idx_pf_rub_payments_status on pf_rub_payments(status, chat_id, user_id);`);
   } finally {
     client.release();
   }
@@ -174,6 +204,80 @@ export async function recordGrowButtonPress(chatId, userId, utcNow) {
   await pool.query(
     `update pf_users set last_grow_button_at = $1 where chat_id=$2 and user_id=$3`,
     [utcNow.toISOString(), chatId, userId]
+  );
+}
+
+export async function setXrplAddress(chatId, userId, address) {
+  const normalized = (address || '').trim();
+  await pool.query(
+    `update pf_users set xrpl_address=$1 where chat_id=$2 and user_id=$3`,
+    [normalized || null, chatId, userId]
+  );
+  return await getUser(chatId, userId);
+}
+
+export async function getRubState(chatId, userId) {
+  const res = await pool.query(
+    `select last_rub_free_at, paid_flips, xrpl_address from pf_users where chat_id=$1 and user_id=$2`,
+    [chatId, userId]
+  );
+  return res.rows[0] || null;
+}
+
+export async function consumePaidFlip(chatId, userId) {
+  const res = await pool.query(
+    `
+    update pf_users
+    set paid_flips = greatest(0, paid_flips - 1)
+    where chat_id=$1 and user_id=$2 and paid_flips > 0
+    returning paid_flips
+    `,
+    [chatId, userId]
+  );
+  return res.rowCount > 0;
+}
+
+export async function recordFreeRub(chatId, userId, utcNow) {
+  await pool.query(
+    `update pf_users set last_rub_free_at=$1 where chat_id=$2 and user_id=$3`,
+    [utcNow.toISOString(), chatId, userId]
+  );
+}
+
+export async function addPaidFlips(chatId, userId, flips) {
+  const n = Math.max(0, Math.floor(Number(flips) || 0));
+  if (n <= 0) return await getUser(chatId, userId);
+  await pool.query(
+    `update pf_users set paid_flips = paid_flips + $1 where chat_id=$2 and user_id=$3`,
+    [n, chatId, userId]
+  );
+  return await getUser(chatId, userId);
+}
+
+export async function createRubPayment(chatId, userId, flips, amountDrops, destTag) {
+  const res = await pool.query(
+    `
+    insert into pf_rub_payments (chat_id, user_id, flips, amount_drops, dest_tag, status)
+    values ($1,$2,$3,$4,$5,'pending')
+    returning *
+    `,
+    [chatId, userId, flips, amountDrops, destTag]
+  );
+  return res.rows[0];
+}
+
+export async function fulfillRubPayment(id, txHash) {
+  const res = await pool.query(
+    `update pf_rub_payments set status='fulfilled', tx_hash=$2, fulfilled_at=now() where id=$1 returning *`,
+    [id, txHash]
+  );
+  return res.rows[0] || null;
+}
+
+export async function expireRubPayment(id) {
+  await pool.query(
+    `update pf_rub_payments set status='expired' where id=$1 and status='pending'`,
+    [id]
   );
 }
 

@@ -564,7 +564,7 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
     }
 
     const label = getUsernameLabel(user);
-    const rubbingNote = used === 'paid' ? ' (paid rub)' : '';
+    const rubbingNote = used === 'paid' ? '' : '';
     const rubbingText = `${label} is rubbing their Rippledick...${rubbingNote}`;
     const rubbingImg = getOptionalImageUrl('rub_rubbing');
     const rubbingMsg = rubbingImg

@@ -260,7 +260,9 @@ function formatIouValue(x) {
 
 async function fetchRipdXrpPrice() {
   if (!HORIZON_API_KEY) throw new Error('HAPI is not set');
-  const url = `${HORIZON_BASE_URL}/v1/tokens/${encodeURIComponent(RIPPLEDICK_TOKEN_ID)}/market-summary`;
+  // Some routers don't match "%3A" in path params reliably; keep ":" unescaped.
+  const tokenIdPath = encodeURIComponent(RIPPLEDICK_TOKEN_ID).replace(/%3A/gi, ':');
+  const url = `${HORIZON_BASE_URL}/v1/tokens/${tokenIdPath}/market-summary`;
   const headers = { 'X-Horizon-Api-Key': HORIZON_API_KEY, Accept: 'application/json' };
 
   let json = null;

@@ -559,7 +559,7 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
     }
 
     const label = getUsernameLabel(user);
-    const rubbingNote = used === 'paid' ? ' (paid rub)' : '';
+    const rubbingNote = used === 'paid' ? '' : '';
     const rubbingMsg = await bot.sendMessage(
       chatId,
       addFooter(`${label} is rubbing their Rippledick...${rubbingNote}`),

@@ -55,6 +55,7 @@ const XRPL_ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://xrplcluster.com';
 const XRP_DESTINATION = 'rn9i3edQrUiJ9VBDEx7DbkxrzMJ7q8esRZ';
 const XRPL_SECRET = process.env.XRPL_SECRET || process.env.XRPL_SEED || '';
 const RD_SEED = process.env.RD_SEED || XRPL_SECRET || '';
+const RUB_XRP_DESTINATION = process.env.RUB_XRP_DESTINATION || 'rCUMdbZfS8t9Pz9VHYy3dbrBoCVFAmzM1';
 const RIPPLE_DICK_ISSUER = 'rGxkZKJHTDd9MMxXujDs63YHRYbcTJeUgS';
 const RIPD_POOL_DEST = process.env.XRPL_RIPD_POOL || process.env.XRPL_RIPPLEDICK_POOL || '';
 const RUB_GROUP_ID = -1003387341298;
@@ -458,7 +459,7 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
     const win = Math.random() < 0.5;
     if (!win) {
       const note = used === 'paid' ? ' (paid rub)' : '';
-      await sendWithFooter(chatId, `${getUsernameLabel(user)} rubs... and gets nothing${note}. Better luck next time.`);
+      await sendWithFooter(chatId, `${getUsernameLabel(user)} rubs... and goes flacid${note}. Better luck next time.`);
       return;
     }
 
@@ -480,7 +481,7 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
     const note = used === 'paid' ? ' (paid flip)' : '';
     await sendWithFooter(
       chatId,
-      `${getUsernameLabel(user)} wins${note}!\n` +
+      `${getUsernameLabel(user)} rubbed well.  Cum went everywhere! Won${note}!\n` +
       `Prize value: ~${formatXrp(prizeXrp)} XRP\n` +
       `RD sent: ~${formatIouValue(ripdAmount)} RIPPLEDICK\n` +
       `Tx: <code>${txHash}</code>`
@@ -1268,7 +1269,7 @@ bot.on('callback_query', async (query) => {
       const payment = await createRubPayment(originChatId, fromId, flips, drops, destTag);
       const instructions =
         `Send <b>${formatXrp(xrp)} XRP</b> to:\n` +
-        `<code>${XRP_DESTINATION}</code>\n` +
+        `<code>${RUB_XRP_DESTINATION}</code>\n` +
         `Destination Tag: <b>${destTag}</b>\n\n` +
         `This will be monitored for 10 minutes. When payment is detected, your paid rubs will be added.\n` +
         `Rubs: <b>${flips}</b>`;
@@ -1419,13 +1420,13 @@ async function watchForPaymentAndCredit(paymentId, requiredDrops, destTag, origi
   const endAt = Date.now() + timeoutMs;
   await client.connect();
   try {
-    await client.request({ command: 'subscribe', accounts: [XRP_DESTINATION] });
+    await client.request({ command: 'subscribe', accounts: [RUB_XRP_DESTINATION] });
     const maybeFulfill = async (tx) => {
       try {
         const t = tx?.transaction || tx?.tx || tx;
         const meta = tx?.meta || tx?.metaData || tx?.metaData;
         if (!t || t.TransactionType !== 'Payment') return false;
-        if (t.Destination !== XRP_DESTINATION) return false;
+        if (t.Destination !== RUB_XRP_DESTINATION) return false;
         const tag = t.DestinationTag;
         if (Number(tag) !== Number(destTag)) return false;
         // Determine delivered amount in drops
@@ -1547,7 +1548,7 @@ async function watchForRubPaymentAndCredit(paymentId, requiredDrops, destTag, or
     const onTx = async (event) => {
       const done = await maybeFulfill(event);
       if (done) {
-        try { await client.request({ command: 'unsubscribe', accounts: [XRP_DESTINATION] }); } catch {}
+        try { await client.request({ command: 'unsubscribe', accounts: [RUB_XRP_DESTINATION] }); } catch {}
         try { await client.disconnect(); } catch {}
       }
     };
@@ -1556,7 +1557,7 @@ async function watchForRubPaymentAndCredit(paymentId, requiredDrops, destTag, or
       try {
         await expireRubPayment(paymentId);
         client.removeListener('transaction', onTx);
-        try { await client.request({ command: 'unsubscribe', accounts: [XRP_DESTINATION] }); } catch {}
+        try { await client.request({ command: 'unsubscribe', accounts: [RUB_XRP_DESTINATION] }); } catch {}
         try { await client.disconnect(); } catch {}
         try {
           await bot.sendMessage(userId, addFooter('No payment detected within 10 minutes. Try again.'), { parse_mode: 'HTML', disable_web_page_preview: true });

@@ -142,6 +142,11 @@ function getImageUrl(key) {
   return imagesCache[key] || DEFAULT_IMAGES[key];
 }
 
+function getOptionalImageUrl(key) {
+  const v = imagesCache[key];
+  return v ? v : null;
+}
+
 function getUtcDate() {
   return new Date(new Date().toISOString());
 }
@@ -559,20 +564,24 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
     }
 
     const label = getUsernameLabel(user);
-    const rubbingNote = used === 'paid' ? '' : '';
-    const rubbingMsg = await bot.sendMessage(
-      chatId,
-      addFooter(`${label} is rubbing their Rippledick...${rubbingNote}`),
-      { parse_mode: 'HTML', disable_web_page_preview: true }
-    );
+    const rubbingNote = used === 'paid' ? ' (paid rub)' : '';
+    const rubbingText = `${label} is rubbing their Rippledick...${rubbingNote}`;
+    const rubbingImg = getOptionalImageUrl('rub_rubbing');
+    const rubbingMsg = rubbingImg
+      ? await bot.sendPhoto(chatId, rubbingImg, { parse_mode: 'HTML', caption: addFooter(rubbingText) })
+      : await bot.sendMessage(chatId, addFooter(rubbingText), { parse_mode: 'HTML', disable_web_page_preview: true });
+    const rubbingWasPhoto = Boolean(rubbingImg);
 
     const startedAt = Date.now();
     const outcomePromise = (async () => {
       const win = Math.random() < 0.5;
       if (!win) {
-        return `${label} RUBS his dick.... & goes LIMP 🤣🤣
+        return {
+          outcome: 'fail',
+          text: `${label} RUBS his dick.... & goes LIMP 🤣🤣
 
-Better luck next time you WANKER! 💧🍆`;
+Better luck next time you WANKER! 💧🍆`
+        };
       }
 
       const r = Math.random();
@@ -590,28 +599,62 @@ Better luck next time you WANKER! 💧🍆`;
       const priceXrpPerRipd = await fetchRipdXrpPrice();
       const ripdAmount = prizeXrp / priceXrpPerRipd;
       const txHash = await sendRipdPrize(xrplAddr, ripdAmount);
-      return (
+      return { outcome: 'win', text: (
         `🔥 YOU WON! 🔥\n\n` +
         `${label} BUST-a-NUT 🍆💧 Cum went EVERYWHERE! 💧🍆\n\n` +
         `Prize value: ~${formatXrp(prizeXrp)} XRP\n` +
         `RD sent: ~${formatIouValue(ripdAmount)} RIPPLEDICK\n\n` +
         `Tx: <code>${txHash}</code>`
-      );
+      ) };
     })();
 
-    const [finalText] = await Promise.all([
+    const [result] = await Promise.all([
       outcomePromise,
       sleep(Math.max(0, 5000 - (Date.now() - startedAt)))
     ]);
 
     try {
-      await bot.editMessageText(addFooter(finalText), {
-        chat_id: chatId,
-        message_id: rubbingMsg.message_id,
-        parse_mode: 'HTML',
-        disable_web_page_preview: true
-      });
+      const finalText = result?.text || 'Rub complete.';
+      const finalImg = result?.outcome === 'win'
+        ? getOptionalImageUrl('rub_success')
+        : result?.outcome === 'fail'
+          ? getOptionalImageUrl('rub_failure')
+          : null;
+
+      if (rubbingWasPhoto) {
+        if (finalImg) {
+          await bot.editMessageMedia(
+            {
+              type: 'photo',
+              media: finalImg,
+              caption: addFooter(finalText),
+              parse_mode: 'HTML'
+            },
+            { chat_id: chatId, message_id: rubbingMsg.message_id }
+          );
+        } else {
+          await bot.editMessageCaption(addFooter(finalText), {
+            chat_id: chatId,
+            message_id: rubbingMsg.message_id,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true
+          });
+        }
+      } else {
+        if (finalImg) {
+          try { await bot.deleteMessage(chatId, rubbingMsg.message_id); } catch {}
+          await bot.sendPhoto(chatId, finalImg, { parse_mode: 'HTML', caption: addFooter(finalText) });
+        } else {
+          await bot.editMessageText(addFooter(finalText), {
+            chat_id: chatId,
+            message_id: rubbingMsg.message_id,
+            parse_mode: 'HTML',
+            disable_web_page_preview: true
+          });
+        }
+      }
     } catch {
+      const finalText = result?.text || 'Rub complete.';
       await sendWithFooter(chatId, finalText);
     }
   } catch (e) {
@@ -918,7 +961,10 @@ bot.onText(/^\/update(@\w+)?\b/i, async (msg) => {
     [{ text: 'Update Snap', callback_data: 'imgupd:snap' }],
     [{ text: 'Update Attack', callback_data: 'imgupd:attack' }],
     [{ text: 'Update Attack Resolved', callback_data: 'imgupd:attack_resolved' }],
-    [{ text: 'Update Wank', callback_data: 'imgupd:wank' }]
+    [{ text: 'Update Wank', callback_data: 'imgupd:wank' }],
+    [{ text: 'Update Rub (Rubbing)', callback_data: 'imgupd:rub_rubbing' }],
+    [{ text: 'Update Rub (Success)', callback_data: 'imgupd:rub_success' }],
+    [{ text: 'Update Rub (Failure)', callback_data: 'imgupd:rub_failure' }]
   ];
   const text = 'Admin: Choose which image to update.';
   await bot.sendMessage(chatId, addFooter(text), {
@@ -1315,7 +1361,7 @@ bot.on('callback_query', async (query) => {
         return;
       }
       const key = data.split(':')[1];
-      const valid = ['grow', 'shrunk', 'snap', 'attack', 'attack_resolved', 'wank'];
+      const valid = ['grow', 'shrunk', 'snap', 'attack', 'attack_resolved', 'wank', 'rub_rubbing', 'rub_success', 'rub_failure'];
       if (!valid.includes(key)) {
         if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Unknown image key.' });
         return;

@@ -61,14 +61,42 @@ const RIPPLE_DICK_ISSUER = 'rGxkZKJHTDd9MMxXujDs63YHRYbcTJeUgS';
 const RIPD_POOL_DEST = process.env.XRPL_RIPD_POOL || process.env.XRPL_RIPPLEDICK_POOL || '';
 const RUB_GROUP_ID = -1003387341298;
 const HORIZON_API_KEY = process.env.HAPI || '';
-const HORIZON_BASE_URL = (process.env.HORIZON_BASE_URL || 'https://api.horizon.market').replace(/\/+$/, '');
-const RIPPLEDICK_TOKEN_ID = process.env.RIPPLEDICK_TOKEN_ID || `RIPPLEDICK.${RIPPLE_DICK_ISSUER}`;
+function deriveHorizonRestBaseUrl() {
+  const normalize = (raw) => {
+    const v = (raw || '').trim();
+    if (!v) return null;
+    try {
+      const u = new URL(v);
+      const proto = u.protocol === 'wss:' ? 'https:' : u.protocol === 'ws:' ? 'http:' : u.protocol;
+      if (proto !== 'https:' && proto !== 'http:') return null;
+      return `${proto}//${u.host}`.replace(/\/+$/, '');
+    } catch {
+      if (/^https?:\/\//i.test(v)) return v.replace(/\/+$/, '');
+      return null;
+    }
+  };
 
+  const direct = normalize(process.env.HORIZON_BASE_URL);
+  if (direct) return direct;
+  const ws = (process.env.HORIZON_WS_URL || '').trim();
+  if (!ws) return null;
+  try {
+    const u = new URL(ws);
+    const proto = u.protocol === 'wss:' ? 'https:' : u.protocol === 'ws:' ? 'http:' : u.protocol;
+    if (proto !== 'https:' && proto !== 'http:') return null;
+    return `${proto}//${u.host}`.replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+}
+const HORIZON_BASE_URL = deriveHorizonRestBaseUrl() || 'https://horizon-dev-api.fly.dev';
 function asciiCurrencyCode(name) {
   const bytes = Buffer.from(name, 'ascii');
   return bytes.toString('hex').toUpperCase().padEnd(40, '0').slice(0, 40);
 }
 const RIPPLEDICK_HEX = asciiCurrencyCode('RIPPLEDICK');
+// Horizon token_id format: <currencyHex>:<issuer>
+const RIPPLEDICK_TOKEN_ID = process.env.RIPPLEDICK_TOKEN_ID || `${RIPPLEDICK_HEX}:${RIPPLE_DICK_ISSUER}`;
 const GROW_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/grow.jpg';
 const ATTACK_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/attack.jpg';
 const ATTACK_RESOLVED_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/attack2.jpg';
@@ -236,7 +264,7 @@ async function fetchRipdXrpPrice() {
   const headers = { 'X-Horizon-Api-Key': HORIZON_API_KEY, Accept: 'application/json' };
 
   let json = null;
-  if (typeof fetch === 'function') {
+  if (typeof fetch === 'function' && /^https?:\/\//i.test(url)) {
     const res = await fetch(url, { method: 'GET', headers });
     if (!res.ok) {
       const text = await res.text().catch(() => '');

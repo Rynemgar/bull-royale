@@ -570,7 +570,9 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
     const outcomePromise = (async () => {
       const win = Math.random() < 0.5;
       if (!win) {
-        return `${label} rubs... and goes flacid${rubbingNote}. Better luck next time.`;
+        return `${label} RUBS his dick.... & goes LIMP 🤣🤣
+
+Better luck next time you WANKER! 💧🍆`;
       }
 
       const r = Math.random();

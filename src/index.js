@@ -1500,13 +1500,13 @@ async function watchForRubPaymentAndCredit(paymentId, requiredDrops, destTag, or
   const timeoutMs = 10 * 60 * 1000;
   await client.connect();
   try {
-    await client.request({ command: 'subscribe', accounts: [XRP_DESTINATION] });
+    await client.request({ command: 'subscribe', accounts: [RUB_XRP_DESTINATION] });
     const maybeFulfill = async (tx) => {
       try {
         const t = tx?.transaction || tx?.tx || tx;
         const meta = tx?.meta || tx?.metaData || tx?.metaData;
         if (!t || t.TransactionType !== 'Payment') return false;
-        if (t.Destination !== XRP_DESTINATION) return false;
+        if (t.Destination !== RUB_XRP_DESTINATION) return false;
         const tag = t.DestinationTag;
         if (Number(tag) !== Number(destTag)) return false;
         let deliveredDrops = null;

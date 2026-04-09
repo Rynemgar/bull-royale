@@ -576,7 +576,7 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
     const priceXrpPerRipd = await fetchRipdXrpPrice();
     const ripdAmount = prizeXrp / priceXrpPerRipd;
     const txHash = await sendRipdPrize(xrplAddr, ripdAmount);
-    const note = used === 'paid' ? ' (paid flip)' : '';
+    const note = used === 'paid' ? '' : '';
     await sendWithFooter(
       chatId,
       `${getUsernameLabel(user)} rubbed well.  Cum went everywhere! Won${note}!\n` +

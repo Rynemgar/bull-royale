@@ -56,6 +56,7 @@ const XRPL_ENDPOINT = process.env.XRPL_ENDPOINT || 'wss://xrplcluster.com';
 const XRP_DESTINATION = 'rn9i3edQrUiJ9VBDEx7DbkxrzMJ7q8esRZ';
 const XRPL_SECRET = process.env.XRPL_SECRET || process.env.XRPL_SEED || '';
 const RD_SEED = process.env.RD_SEED || '';
+const RD_ALGORITHM = (process.env.RD_ALGORITHM || 'secp256k1').toLowerCase();
 const RUB_XRP_DESTINATION = process.env.RUB_XRP_DESTINATION || 'rCUMdbZfS8t9Pz9VHYy3dbrBoCVFAmzM1';
 const RIPPLE_DICK_ISSUER = 'rGxkZKJHTDd9MMxXujDs63YHRYbcTJeUgS';
 const RIPD_POOL_DEST = process.env.XRPL_RIPD_POOL || process.env.XRPL_RIPPLEDICK_POOL || '';
@@ -94,6 +95,25 @@ function deriveHorizonRestBaseUrl() {
   }
 }
 const HORIZON_BASE_URL = deriveHorizonRestBaseUrl() || 'https://horizon-dev-api.fly.dev';
+function deriveHorizonTokensBaseUrl() {
+  // Prefer an explicit override for token/market endpoints.
+  const explicit = (process.env.HORIZON_TOKENS_BASE_URL || '').trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+  // Prefer WS-derived base if present (keeps us on same environment even if HORIZON_BASE_URL is mis-set)
+  const ws = (process.env.HORIZON_WS_URL || '').trim();
+  if (ws) {
+    try {
+      const u = new URL(ws);
+      const proto = u.protocol === 'wss:' ? 'https:' : u.protocol === 'ws:' ? 'http:' : u.protocol;
+      if (proto === 'https:' || proto === 'http:') {
+        const prefix = (u.pathname || '').startsWith('/v1/ws/') ? '/v1' : '';
+        return `${proto}//${u.host}${prefix}`.replace(/\/+$/, '');
+      }
+    } catch {}
+  }
+  return HORIZON_BASE_URL;
+}
+const HORIZON_TOKENS_BASE_URL = deriveHorizonTokensBaseUrl();
 function asciiCurrencyCode(name) {
   const bytes = Buffer.from(name, 'ascii');
   return bytes.toString('hex').toUpperCase().padEnd(40, '0').slice(0, 40);
@@ -266,7 +286,7 @@ async function fetchRipdXrpPrice() {
   if (!HORIZON_API_KEY) throw new Error('HAPI is not set');
   // Some routers don't match "%3A" in path params reliably; keep ":" unescaped.
   const tokenIdPath = encodeURIComponent(RIPPLEDICK_TOKEN_ID).replace(/%3A/gi, ':');
-  const base = String(HORIZON_BASE_URL || '').replace(/\/+$/, '');
+  const base = String(HORIZON_TOKENS_BASE_URL || '').replace(/\/+$/, '');
   const headers = { 'X-Horizon-Api-Key': HORIZON_API_KEY, Accept: 'application/json' };
 
   const candidates = [];
@@ -342,7 +362,7 @@ async function sendRipdPrize(destAddress, ripdAmount) {
   const client = new XrplClient(XRPL_ENDPOINT);
   await client.connect();
   try {
-    const wallet = Wallet.fromSeed(RD_SEED);
+    const wallet = Wallet.fromSeed(RD_SEED, { algorithm: RD_ALGORITHM });
     await ensureTrustline(client, wallet, RIPPLEDICK_HEX, RIPPLE_DICK_ISSUER);
     const tx = {
       TransactionType: 'Payment',
@@ -570,11 +590,13 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
       try { await addPaidFlips(chatId, userId, 1); } catch {}
     }
     const msgText = String(e?.message || '');
+    const xrplErr = e?.data?.error || e?.data?.error_message || '';
     const hint =
       msgText.includes('HAPI is not set') ? '\nMissing server env: <code>HAPI</code>.' :
       msgText.startsWith('Horizon error') ? '\nHorizon API call failed (check token id / base URL / key).' :
       msgText.includes('Invalid Horizon') ? '\nHorizon returned no valid XRP price.' :
       msgText.includes('RD_SEED is not set') ? '\nMissing server env: <code>RD_SEED</code>.' :
+      xrplErr === 'actNotFound' || msgText.includes('Account not found') ? '\nYour <code>RD_SEED</code> wallet address is not activated on this XRPL network (or you are pointing at the wrong network). Fund/activate it with a small amount of XRP, and confirm <code>XRPL_ENDPOINT</code> matches the network.' :
       msgText.includes('XRPL send failed') ? '\nXRPL payment failed (wallet balance / trustlines / network).' :
       '';
     await sendWithFooter(chatId, `Could not process /rub right now.${hint}`);
@@ -1532,7 +1554,7 @@ async function watchForPaymentAndCredit(paymentId, requiredDrops, destTag, origi
           console.warn('[buy] RD_SEED not set; skipping purchase.');
         } else {
           try {
-            const wallet = Wallet.fromSeed(RD_SEED);
+            const wallet = Wallet.fromSeed(RD_SEED, { algorithm: RD_ALGORITHM });
             const buyDrops = Math.floor(Number(deliveredDrops) / 2);
             console.log('[buy] using half of received drops for purchase', { deliveredDrops, buyDrops });
             await buyRipdWithDrops(client, wallet, buyDrops);
@@ -1611,7 +1633,7 @@ async function watchForRubPaymentAndCredit(paymentId, requiredDrops, destTag, or
           console.warn('[buy] RD_SEED not set; skipping purchase.');
         } else {
           try {
-            const wallet = Wallet.fromSeed(RD_SEED);
+            const wallet = Wallet.fromSeed(RD_SEED, { algorithm: RD_ALGORITHM });
             const buyDrops = Number(deliveredDrops);
             console.log('[buy] using all received drops for purchase', { deliveredDrops, buyDrops });
             await buyRipdWithDrops(client, wallet, buyDrops);

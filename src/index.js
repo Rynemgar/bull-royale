@@ -282,6 +282,10 @@ function formatIouValue(x) {
   return n.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function fetchRipdXrpPrice() {
   if (!HORIZON_API_KEY) throw new Error('HAPI is not set');
   // Some routers don't match "%3A" in path params reliably; keep ":" unescaped.
@@ -554,36 +558,59 @@ bot.onText(/^\/rub(@\w+)?\b/i, async (msg) => {
       return;
     }
 
-    const win = Math.random() < 0.5;
-    if (!win) {
-      const note = used === 'paid' ? '' : '';
-      await sendWithFooter(chatId, `${getUsernameLabel(user)} rubs... and goes flacid${note}. Better luck next time.`);
-      return;
-    }
-
-    const r = Math.random();
-    let prizeXrp = 0.01;
-    if (r < 0.95) {
-      prizeXrp = 0.01 + Math.random() * (0.05 - 0.01);
-    } else if (r < 0.99) {
-      prizeXrp = 0.1 + Math.random() * (0.5 - 0.1);
-    } else if (r < 0.999) {
-      prizeXrp = 1.0;
-    } else {
-      prizeXrp = 5.0;
-    }
-
-    const priceXrpPerRipd = await fetchRipdXrpPrice();
-    const ripdAmount = prizeXrp / priceXrpPerRipd;
-    const txHash = await sendRipdPrize(xrplAddr, ripdAmount);
-    const note = used === 'paid' ? '' : '';
-    await sendWithFooter(
+    const label = getUsernameLabel(user);
+    const rubbingNote = used === 'paid' ? ' (paid rub)' : '';
+    const rubbingMsg = await bot.sendMessage(
       chatId,
-      `${getUsernameLabel(user)} rubbed well.  Cum went everywhere! Won${note}!\n` +
-      `Prize value: ~${formatXrp(prizeXrp)} XRP\n` +
-      `RD sent: ~${formatIouValue(ripdAmount)} RIPPLEDICK\n` +
-      `Tx: <code>${txHash}</code>`
+      addFooter(`${label} is rubbing their Rippledick...${rubbingNote}`),
+      { parse_mode: 'HTML', disable_web_page_preview: true }
     );
+
+    const startedAt = Date.now();
+    const outcomePromise = (async () => {
+      const win = Math.random() < 0.5;
+      if (!win) {
+        return `${label} rubs... and goes flacid${rubbingNote}. Better luck next time.`;
+      }
+
+      const r = Math.random();
+      let prizeXrp = 0.01;
+      if (r < 0.95) {
+        prizeXrp = 0.01 + Math.random() * (0.05 - 0.01);
+      } else if (r < 0.99) {
+        prizeXrp = 0.1 + Math.random() * (0.5 - 0.1);
+      } else if (r < 0.999) {
+        prizeXrp = 1.0;
+      } else {
+        prizeXrp = 5.0;
+      }
+
+      const priceXrpPerRipd = await fetchRipdXrpPrice();
+      const ripdAmount = prizeXrp / priceXrpPerRipd;
+      const txHash = await sendRipdPrize(xrplAddr, ripdAmount);
+      return (
+        `${label} rubbed well.  Cum went everywhere! Won${rubbingNote}!\n` +
+        `Prize value: ~${formatXrp(prizeXrp)} XRP\n` +
+        `RD sent: ~${formatIouValue(ripdAmount)} RIPPLEDICK\n` +
+        `Tx: <code>${txHash}</code>`
+      );
+    })();
+
+    const [finalText] = await Promise.all([
+      outcomePromise,
+      sleep(Math.max(0, 5000 - (Date.now() - startedAt)))
+    ]);
+
+    try {
+      await bot.editMessageText(addFooter(finalText), {
+        chat_id: chatId,
+        message_id: rubbingMsg.message_id,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true
+      });
+    } catch {
+      await sendWithFooter(chatId, finalText);
+    }
   } catch (e) {
     console.error('rub error', e);
     if (consumedPaid) {

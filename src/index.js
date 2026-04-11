@@ -125,14 +125,12 @@ const GROW_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12
 const ATTACK_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/attack.jpg';
 const ATTACK_RESOLVED_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/attack2.jpg';
 const SHRUNK_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/Shrunk.jpg';
-const SNAP_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/Snap.jpg';
 const WANK_IMAGE_URL = 'https://www.burnwithmerch.com/wp-content/uploads/2025/12/wank.jpg';
 
 // Image config (DB-backed with defaults)
 const DEFAULT_IMAGES = {
   grow: GROW_IMAGE_URL,
   shrunk: SHRUNK_IMAGE_URL,
-  snap: SNAP_IMAGE_URL,
   attack: ATTACK_IMAGE_URL,
   attack_resolved: ATTACK_RESOLVED_IMAGE_URL,
   wank: WANK_IMAGE_URL
@@ -449,32 +447,20 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
       }
       return;
     }
-    // If already over 100cm, 15% chance to snap and lose 10–50% total
     const current = await getUser(chatId, userId);
-    if (current && Number(current.length_cm) > 100 && Math.random() < 0.15) {
-      const pct = 0.10 + Math.random() * 0.40; // 10%..50%
-      const loss = Math.max(1, Math.floor(Number(current.length_cm) * pct));
-      const updated = await applyGrowth(chatId, userId, -loss, utcNow);
-      const pctText = Math.round(pct * 100);
-      {
-        const caption = `${getUsernameLabel(user)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`;
-        await bot.sendPhoto(chatId, getImageUrl('snap'), { parse_mode: 'HTML', caption: addFooter(caption) });
-      }
-    } else {
-      // 90% chance positive (1..15), 10% chance negative (-1..-5), never 0
-      const mustBePositive = current && Number(current.length_cm) === 0;
-      const delta = mustBePositive
+    // 90% chance positive (1..15), 10% chance negative (-1..-5), never 0
+    const mustBePositive = current && Number(current.length_cm) === 0;
+    const delta = mustBePositive
+      ? (1 + Math.floor(Math.random() * 15))
+      : ((Math.random() < 0.90)
         ? (1 + Math.floor(Math.random() * 15))
-        : ((Math.random() < 0.90)
-          ? (1 + Math.floor(Math.random() * 15))
-          : (-1 - Math.floor(Math.random() * 5)));
-      const updated = await applyGrowth(chatId, userId, delta, utcNow);
-      const sign = delta >= 0 ? '+' : '';
-      {
-        const caption = `${getUsernameLabel(user)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`;
-        const imageUrl = delta < 0 ? getImageUrl('shrunk') : getImageUrl('grow');
-        await bot.sendPhoto(chatId, imageUrl, { parse_mode: 'HTML', caption: addFooter(caption) });
-      }
+        : (-1 - Math.floor(Math.random() * 5)));
+    const updated = await applyGrowth(chatId, userId, delta, utcNow);
+    const sign = delta >= 0 ? '+' : '';
+    {
+      const caption = `${getUsernameLabel(user)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`;
+      const imageUrl = delta < 0 ? getImageUrl('shrunk') : getImageUrl('grow');
+      await bot.sendPhoto(chatId, imageUrl, { parse_mode: 'HTML', caption: addFooter(caption) });
     }
   } catch (err) {
     console.error('grow error', err);
@@ -957,7 +943,6 @@ bot.onText(/^\/update(@\w+)?\b/i, async (msg) => {
   const keyboard = [
     [{ text: 'Update Grow', callback_data: 'imgupd:grow' }],
     [{ text: 'Update Shrunk', callback_data: 'imgupd:shrunk' }],
-    [{ text: 'Update Snap', callback_data: 'imgupd:snap' }],
     [{ text: 'Update Attack', callback_data: 'imgupd:attack' }],
     [{ text: 'Update Attack Resolved', callback_data: 'imgupd:attack_resolved' }],
     [{ text: 'Update Wank', callback_data: 'imgupd:wank' }],
@@ -1011,11 +996,8 @@ bot.onText(/^\/stats(@\w+)?(?:\s+(.+))?/i, async (msg, match) => {
     }
     const total = Number(person.wins) + Number(person.losses);
     const pct = total > 0 ? Math.round((Number(person.wins) / total) * 100) : 0;
-    const danger = Number(person.length_cm) > 100
-      ? `\nWarning: You are in the danger zone. /grow has a 30% chance to snap your dick (-10% to -50%).`
-      : '';
     const label = getUsernameLabel({ id: person.user_id, username: person.username, first_name: person.first_name });
-    const text = `${label}\nLength: ${person.length_cm}cm\nW/L: ${person.wins}/${person.losses} (${pct}%)${danger}`;
+    const text = `${label}\nLength: ${person.length_cm}cm\nW/L: ${person.wins}/${person.losses} (${pct}%)`;
     await sendWithGrow(chatId, text);
   } catch (err) {
     console.error('stats error', err);
@@ -1229,29 +1211,18 @@ bot.on('callback_query', async (query) => {
         return;
       }
       const current = await getUser(chatId, fromId);
-      if (current && Number(current.length_cm) > 100 && Math.random() < 0.30) {
-        const pct = 0.10 + Math.random() * 0.40;
-        const loss = Math.max(1, Math.floor(Number(current.length_cm) * pct));
-        const updated = await applyGrowth(chatId, fromId, -loss, utcNow);
-        const pctText = Math.round(pct * 100);
-        {
-          const caption = `${getUsernameLabel(from)} snapped their dick! -${loss}cm (${pctText}%). Current length: ${updated.length_cm}cm.`;
-          await bot.sendPhoto(chatId, getImageUrl('snap'), { parse_mode: 'HTML', caption: addFooter(caption) });
-        }
-      } else {
-        const mustBePositive = current && Number(current.length_cm) === 0;
-        const delta = mustBePositive
+      const mustBePositive = current && Number(current.length_cm) === 0;
+      const delta = mustBePositive
+        ? (1 + Math.floor(Math.random() * 15))
+        : ((Math.random() < 0.90)
           ? (1 + Math.floor(Math.random() * 15))
-          : ((Math.random() < 0.90)
-            ? (1 + Math.floor(Math.random() * 15))
-            : (-1 - Math.floor(Math.random() * 5)));
-        const updated = await applyGrowth(chatId, fromId, delta, utcNow);
-        const sign = delta >= 0 ? '+' : '';
-        {
-          const caption = `${getUsernameLabel(from)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`;
-          const imageUrl = delta < 0 ? getImageUrl('shrunk') : getImageUrl('grow');
-          await bot.sendPhoto(chatId, imageUrl, { parse_mode: 'HTML', caption: addFooter(caption) });
-        }
+          : (-1 - Math.floor(Math.random() * 5)));
+      const updated = await applyGrowth(chatId, fromId, delta, utcNow);
+      const sign = delta >= 0 ? '+' : '';
+      {
+        const caption = `${getUsernameLabel(from)} used /grow: ${sign}${delta}cm. Current length: ${updated.length_cm}cm.`;
+        const imageUrl = delta < 0 ? getImageUrl('shrunk') : getImageUrl('grow');
+        await bot.sendPhoto(chatId, imageUrl, { parse_mode: 'HTML', caption: addFooter(caption) });
       }
       if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Grown!' });
     } catch (err) {
@@ -1360,7 +1331,7 @@ bot.on('callback_query', async (query) => {
         return;
       }
       const key = data.split(':')[1];
-      const valid = ['grow', 'shrunk', 'snap', 'attack', 'attack_resolved', 'wank', 'rub_rubbing', 'rub_success', 'rub_failure'];
+      const valid = ['grow', 'shrunk', 'attack', 'attack_resolved', 'wank', 'rub_rubbing', 'rub_success', 'rub_failure'];
       if (!valid.includes(key)) {
         if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Unknown image key.' });
         return;

@@ -113,14 +113,19 @@ function mediaContentType(filePath) {
 }
 
 async function sendKeyedMedia(chatId, key, options = {}) {
-  options = withFooterButton(options);
   const resolved = resolveMedia(key);
+  const {
+    caption,
+    parse_mode = 'HTML',
+    reply_markup,
+    disable_notification
+  } = options;
+
   if (!resolved || !resolved.media) {
-    const { caption, ...rest } = options;
     return bot.sendMessage(chatId, caption || '', {
-      parse_mode: rest.parse_mode || 'HTML',
+      parse_mode,
       disable_web_page_preview: true,
-      reply_markup: rest.reply_markup
+      reply_markup
     });
   }
 
@@ -130,17 +135,19 @@ async function sendKeyedMedia(chatId, key, options = {}) {
     (media.includes(path.sep) || media.includes('/')) &&
     fs.existsSync(media);
 
-  // Local uploads must put caption/parse_mode in multipart formData.
-  // The library puts them in qs alongside formData, and HTML links in captions get dropped.
+  // Send media without caption first. HTML <a> links in captions are dropped when
+  // bundled with multipart uploads; editMessageCaption uses form and keeps them.
+  const field =
+    resolved.type === 'video' ? 'video' :
+    resolved.type === 'animation' ? 'animation' :
+    'photo';
+  const method =
+    resolved.type === 'video' ? 'sendVideo' :
+    resolved.type === 'animation' ? 'sendAnimation' :
+    'sendPhoto';
+
+  let msg;
   if (isLocalFile) {
-    const field =
-      resolved.type === 'video' ? 'video' :
-      resolved.type === 'animation' ? 'animation' :
-      'photo';
-    const method =
-      resolved.type === 'video' ? 'sendVideo' :
-      resolved.type === 'animation' ? 'sendAnimation' :
-      'sendPhoto';
     const formData = {
       chat_id: String(chatId),
       [field]: {
@@ -151,35 +158,27 @@ async function sendKeyedMedia(chatId, key, options = {}) {
         }
       }
     };
-    if (options.caption != null) formData.caption = options.caption;
-    if (options.parse_mode) formData.parse_mode = options.parse_mode;
-    else formData.parse_mode = 'HTML';
-    if (options.reply_markup) formData.reply_markup = JSON.stringify(options.reply_markup);
-    if (options.disable_notification != null) {
-      formData.disable_notification = String(!!options.disable_notification);
+    if (reply_markup) formData.reply_markup = JSON.stringify(reply_markup);
+    if (disable_notification != null) {
+      formData.disable_notification = String(!!disable_notification);
     }
-    return bot._request(method, { formData });
+    msg = await bot._request(method, { formData });
+  } else {
+    const form = { chat_id: chatId, [field]: media };
+    if (reply_markup) form.reply_markup = reply_markup;
+    if (disable_notification != null) form.disable_notification = disable_notification;
+    msg = await bot._request(method, { form });
   }
 
-  // file_id / URL: use form body so HTML caption links aren't dropped from qs
-  const form = {
-    chat_id: chatId,
-    caption: options.caption,
-    parse_mode: options.parse_mode || 'HTML'
-  };
-  if (options.reply_markup) form.reply_markup = options.reply_markup;
-  if (options.disable_notification != null) form.disable_notification = options.disable_notification;
-
-  if (resolved.type === 'video') {
-    form.video = media;
-    return bot._request('sendVideo', { form });
+  if (caption != null && caption !== '' && msg?.message_id) {
+    await bot.editMessageCaption(caption, {
+      chat_id: chatId,
+      message_id: msg.message_id,
+      parse_mode,
+      reply_markup
+    });
   }
-  if (resolved.type === 'animation') {
-    form.animation = media;
-    return bot._request('sendAnimation', { form });
-  }
-  form.photo = media;
-  return bot._request('sendPhoto', { form });
+  return msg;
 }
 
 function getUtcNow() {
@@ -227,53 +226,22 @@ async function maybeSnapHorns(chatId, userId, currentLength) {
   return { snapped: true, before, after: stump };
 }
 
-const FOOTER_LABEL = 'Bull Royale - Part of Dom Inc';
-const FOOTER_URL = 'https://t.me/DomIncXRP';
-const FOOTER_HTML = `\n\n<a href="${FOOTER_URL}">${FOOTER_LABEL}</a>`;
-
+const FOOTER_HTML = `\n\n<a href="https://t.me/DomIncXRP">Bull Royale - Part of Dom Inc</a>`;
 function addFooter(text) {
   return `${text}${FOOTER_HTML}`;
 }
 
-/** Ensure every message has a tappable Dom Inc URL button (HTML caption links are unreliable on media). */
-function withFooterButton(options = {}) {
-  const existing =
-    options.reply_markup && Array.isArray(options.reply_markup.inline_keyboard)
-      ? options.reply_markup.inline_keyboard.slice()
-      : [];
-  const already = existing.some(
-    (row) => Array.isArray(row) && row.some((btn) => btn && btn.url === FOOTER_URL)
-  );
-  const inline_keyboard = already
-    ? existing
-    : existing.concat([[{ text: FOOTER_LABEL, url: FOOTER_URL }]]);
-  return {
-    ...options,
-    reply_markup: {
-      ...(options.reply_markup || {}),
-      inline_keyboard
-    }
-  };
-}
-
 function withGrowButton(options) {
-  const base = options || {};
-  const existing =
-    base.reply_markup && Array.isArray(base.reply_markup.inline_keyboard)
-      ? base.reply_markup.inline_keyboard.slice()
-      : [];
-  const withoutFooter = existing.filter(
-    (row) => !(Array.isArray(row) && row.some((btn) => btn && btn.url === FOOTER_URL))
-  );
-  const inline_keyboard = withoutFooter
-    .concat([[{ text: 'Grow horns', callback_data: 'grow_now' }]])
-    .concat([[{ text: FOOTER_LABEL, url: FOOTER_URL }]]);
+  const existing = options && options.reply_markup && Array.isArray(options.reply_markup.inline_keyboard)
+    ? options.reply_markup.inline_keyboard.slice()
+    : [];
+  const inline_keyboard = existing.concat([[{ text: 'Grow horns', callback_data: 'grow_now' }]]);
   return {
-    ...base,
+    ...(options || {}),
     parse_mode: 'HTML',
     disable_web_page_preview: true,
     reply_markup: {
-      ...(base.reply_markup || {}),
+      ...(options && options.reply_markup ? options.reply_markup : {}),
       inline_keyboard
     }
   };
@@ -284,11 +252,7 @@ function sendWithGrow(chatId, text, options) {
 }
 
 function sendWithFooter(chatId, text, options) {
-  const opts = withFooterButton({
-    ...(options || {}),
-    parse_mode: 'HTML',
-    disable_web_page_preview: true
-  });
+  const opts = { ...(options || {}), parse_mode: 'HTML', disable_web_page_preview: true };
   return bot.sendMessage(chatId, addFooter(text), opts);
 }
 

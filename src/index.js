@@ -113,6 +113,7 @@ function mediaContentType(filePath) {
 }
 
 async function sendKeyedMedia(chatId, key, options = {}) {
+  options = withFooterButton(options);
   const resolved = resolveMedia(key);
   if (!resolved || !resolved.media) {
     const { caption, ...rest } = options;
@@ -226,22 +227,53 @@ async function maybeSnapHorns(chatId, userId, currentLength) {
   return { snapped: true, before, after: stump };
 }
 
-const FOOTER_HTML = `\n\n<a href="https://t.me/DomIncXRP">Bull Royale - Part of Dom Inc</a>`;
+const FOOTER_LABEL = 'Bull Royale - Part of Dom Inc';
+const FOOTER_URL = 'https://t.me/DomIncXRP';
+const FOOTER_HTML = `\n\n<a href="${FOOTER_URL}">${FOOTER_LABEL}</a>`;
+
 function addFooter(text) {
   return `${text}${FOOTER_HTML}`;
 }
 
-function withGrowButton(options) {
-  const existing = options && options.reply_markup && Array.isArray(options.reply_markup.inline_keyboard)
-    ? options.reply_markup.inline_keyboard.slice()
-    : [];
-  const inline_keyboard = existing.concat([[{ text: 'Grow horns', callback_data: 'grow_now' }]]);
+/** Ensure every message has a tappable Dom Inc URL button (HTML caption links are unreliable on media). */
+function withFooterButton(options = {}) {
+  const existing =
+    options.reply_markup && Array.isArray(options.reply_markup.inline_keyboard)
+      ? options.reply_markup.inline_keyboard.slice()
+      : [];
+  const already = existing.some(
+    (row) => Array.isArray(row) && row.some((btn) => btn && btn.url === FOOTER_URL)
+  );
+  const inline_keyboard = already
+    ? existing
+    : existing.concat([[{ text: FOOTER_LABEL, url: FOOTER_URL }]]);
   return {
-    ...(options || {}),
+    ...options,
+    reply_markup: {
+      ...(options.reply_markup || {}),
+      inline_keyboard
+    }
+  };
+}
+
+function withGrowButton(options) {
+  const base = options || {};
+  const existing =
+    base.reply_markup && Array.isArray(base.reply_markup.inline_keyboard)
+      ? base.reply_markup.inline_keyboard.slice()
+      : [];
+  const withoutFooter = existing.filter(
+    (row) => !(Array.isArray(row) && row.some((btn) => btn && btn.url === FOOTER_URL))
+  );
+  const inline_keyboard = withoutFooter
+    .concat([[{ text: 'Grow horns', callback_data: 'grow_now' }]])
+    .concat([[{ text: FOOTER_LABEL, url: FOOTER_URL }]]);
+  return {
+    ...base,
     parse_mode: 'HTML',
     disable_web_page_preview: true,
     reply_markup: {
-      ...(options && options.reply_markup ? options.reply_markup : {}),
+      ...(base.reply_markup || {}),
       inline_keyboard
     }
   };
@@ -252,7 +284,11 @@ function sendWithGrow(chatId, text, options) {
 }
 
 function sendWithFooter(chatId, text, options) {
-  const opts = { ...(options || {}), parse_mode: 'HTML', disable_web_page_preview: true };
+  const opts = withFooterButton({
+    ...(options || {}),
+    parse_mode: 'HTML',
+    disable_web_page_preview: true
+  });
   return bot.sendMessage(chatId, addFooter(text), opts);
 }
 

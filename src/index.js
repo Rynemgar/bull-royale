@@ -237,13 +237,20 @@ async function notifyBotAddedToGroup(chat, actor) {
         if (exported) invite = `Invite: ${exported}\n`;
       } catch {}
     }
-    // Welcome the group with the Bull Royale poster
+    // Welcome the group with the Bull Royale poster + command breakdown
     try {
       await sendKeyedMedia(chat.id, 'poster', {
         parse_mode: 'HTML',
         caption: addFooter(
           `<b>Bull Royale</b> has entered the arena.\n` +
-          `Grow. Duel. Steal horns.\n` +
+          `Grow. Duel. Steal horns.\n\n` +
+          `<b>Commands</b>\n` +
+          `/grow — Grow your horns (every 8h)\n` +
+          `/attack &lt;bet&gt; — Challenge a Horn Clash\n` +
+          `/stats — Horn length &amp; W/L\n` +
+          `/top — Top 10 in this group\n` +
+          `/average — Group &amp; global averages\n` +
+          `/bulloftheday — Today's random champion\n\n` +
           `Use /grow to start.`
         )
       });

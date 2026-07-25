@@ -16,6 +16,14 @@ export const pool = new Pool({
     : false
 });
 
+const GROW_COOLDOWN_MS = 8 * 60 * 60 * 1000; // 8 hours
+
+export function roundCm(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return 0;
+  return Math.round(v * 100) / 100;
+}
+
 export async function initSchema() {
   const client = await pool.connect();
   try {
@@ -25,39 +33,35 @@ export async function initSchema() {
         user_id bigint not null,
         username text,
         first_name text,
-        xrpl_address text,
-        length_cm integer not null default 0,
+        length_cm numeric(12,2) not null default 0,
         wins integer not null default 0,
         losses integer not null default 0,
-        last_grow_date date null,
-        last_rub_free_at timestamptz null,
-        paid_flips integer not null default 0,
+        last_grow_at timestamptz null,
         created_at timestamptz not null default now(),
         primary key (chat_id, user_id)
       );
     `);
+    // Migrate legacy integer length → numeric(12,2)
     await client.query(`
       alter table pf_users
-      add column if not exists last_grow_button_at timestamptz null
-    `);
+      alter column length_cm type numeric(12,2) using length_cm::numeric(12,2)
+    `).catch(() => {});
     await client.query(`
       alter table pf_users
-      add column if not exists xrpl_address text
+      add column if not exists last_grow_at timestamptz null
     `);
+    // Migrate legacy once-per-day date into last_grow_at (midnight of that date) if needed
     await client.query(`
-      alter table pf_users
-      add column if not exists last_rub_free_at timestamptz null
-    `);
-    await client.query(`
-      alter table pf_users
-      add column if not exists paid_flips integer not null default 0
-    `);
+      update pf_users
+      set last_grow_at = (last_grow_date::timestamp at time zone 'UTC')
+      where last_grow_at is null and last_grow_date is not null
+    `).catch(() => {});
     await client.query(`
       create table if not exists pf_challenges (
         id bigserial primary key,
         chat_id bigint not null,
         attacker_user_id bigint not null,
-        bet_cm integer not null,
+        bet_cm numeric(12,2) not null,
         message_id bigint,
         status text not null default 'open', -- open | resolved | cancelled
         accepted_by_user_id bigint,
@@ -65,6 +69,10 @@ export async function initSchema() {
         created_at timestamptz not null default now()
       );
     `);
+    await client.query(`
+      alter table pf_challenges
+      alter column bet_cm type numeric(12,2) using bet_cm::numeric(12,2)
+    `).catch(() => {});
     await client.query(`create index if not exists idx_pf_challenges_chat_status on pf_challenges(chat_id, status);`);
     await client.query(`
       create table if not exists pf_potd (
@@ -76,44 +84,12 @@ export async function initSchema() {
       );
     `);
     await client.query(`
-      create table if not exists pf_payments (
-        id bigserial primary key,
-        chat_id bigint not null,
-        user_id bigint not null,
-        tier text not null,
-        min_gain_cm integer not null,
-        max_gain_cm integer not null,
-        amount_drops bigint not null,
-        dest_tag bigint not null,
-        status text not null default 'pending', -- pending | fulfilled | expired | cancelled
-        tx_hash text,
-        credited_cm integer,
-        created_at timestamptz not null default now(),
-        fulfilled_at timestamptz
-      );
-    `);
-    await client.query(`
       create table if not exists pf_images (
         key text primary key,
         url text not null,
         updated_at timestamptz not null default now()
       );
     `);
-    await client.query(`
-      create table if not exists pf_rub_payments (
-        id bigserial primary key,
-        chat_id bigint not null,
-        user_id bigint not null,
-        flips integer not null,
-        amount_drops bigint not null,
-        dest_tag bigint not null,
-        status text not null default 'pending', -- pending | fulfilled | expired | cancelled
-        tx_hash text,
-        created_at timestamptz not null default now(),
-        fulfilled_at timestamptz
-      );
-    `);
-    await client.query(`create index if not exists idx_pf_rub_payments_status on pf_rub_payments(status, chat_id, user_id);`);
   } finally {
     client.release();
   }
@@ -148,137 +124,61 @@ export async function getUserByUsername(chatId, username) {
   return res.rows[0] || null;
 }
 
-export async function canGrowToday(chatId, userId, utcDate) {
+export async function canGrow(chatId, userId, utcNow = new Date()) {
   const res = await pool.query(
-    `select last_grow_date from pf_users where chat_id=$1 and user_id=$2`,
+    `select last_grow_at from pf_users where chat_id=$1 and user_id=$2`,
     [chatId, userId]
   );
   if (res.rowCount === 0) return true;
-  const last = res.rows[0].last_grow_date;
+  const last = res.rows[0].last_grow_at;
   if (!last) return true;
-  // Compare by date string in UTC
-  const lastStr = new Date(last).toISOString().slice(0, 10);
-  const currStr = utcDate.toISOString().slice(0, 10);
-  return lastStr !== currStr;
+  return utcNow.getTime() - new Date(last).getTime() >= GROW_COOLDOWN_MS;
 }
 
-export async function applyGrowth(chatId, userId, delta, utcDate) {
-  // Floor at 0 cm
+export async function getGrowCooldownRemainingMs(chatId, userId, utcNow = new Date()) {
+  const res = await pool.query(
+    `select last_grow_at from pf_users where chat_id=$1 and user_id=$2`,
+    [chatId, userId]
+  );
+  if (res.rowCount === 0 || !res.rows[0].last_grow_at) return 0;
+  const elapsed = utcNow.getTime() - new Date(res.rows[0].last_grow_at).getTime();
+  return Math.max(0, GROW_COOLDOWN_MS - elapsed);
+}
+
+export async function applyGrowth(chatId, userId, delta, utcNow = new Date()) {
+  const d = roundCm(delta);
   await pool.query(
     `
     update pf_users
-    set length_cm = greatest(0, length_cm + $1), last_grow_date = $2
+    set length_cm = round(greatest(0, length_cm + $1)::numeric, 2),
+        last_grow_at = $2
     where chat_id = $3 and user_id = $4
     `,
-    [delta, utcDate.toISOString().slice(0, 10), chatId, userId]
+    [d, utcNow.toISOString(), chatId, userId]
   );
-  const updated = await getUser(chatId, userId);
-  return updated;
+  return await getUser(chatId, userId);
 }
 
 export async function addLength(chatId, userId, delta) {
+  const d = roundCm(delta);
   await pool.query(
     `
     update pf_users
-    set length_cm = greatest(0, length_cm + $1)
+    set length_cm = round(greatest(0, length_cm + $1)::numeric, 2)
     where chat_id = $2 and user_id = $3
     `,
-    [delta, chatId, userId]
+    [d, chatId, userId]
   );
   return await getUser(chatId, userId);
 }
 
-export async function canPressGrowButton(chatId, userId, utcNow) {
-  const res = await pool.query(
-    `select last_grow_button_at from pf_users where chat_id=$1 and user_id=$2`,
-    [chatId, userId]
-  );
-  if (res.rowCount === 0) return true;
-  const last = res.rows[0].last_grow_button_at;
-  if (!last) return true;
-  const diffMs = utcNow.getTime() - new Date(last).getTime();
-  return diffMs >= 3600000; // 1 hour
-}
-
-export async function recordGrowButtonPress(chatId, userId, utcNow) {
+export async function setLength(chatId, userId, lengthCm) {
+  const v = roundCm(Math.max(0, lengthCm));
   await pool.query(
-    `update pf_users set last_grow_button_at = $1 where chat_id=$2 and user_id=$3`,
-    [utcNow.toISOString(), chatId, userId]
-  );
-}
-
-export async function setXrplAddress(chatId, userId, address) {
-  const normalized = (address || '').trim();
-  await pool.query(
-    `update pf_users set xrpl_address=$1 where chat_id=$2 and user_id=$3`,
-    [normalized || null, chatId, userId]
+    `update pf_users set length_cm = $1 where chat_id = $2 and user_id = $3`,
+    [v, chatId, userId]
   );
   return await getUser(chatId, userId);
-}
-
-export async function getRubState(chatId, userId) {
-  const res = await pool.query(
-    `select last_rub_free_at, paid_flips, xrpl_address from pf_users where chat_id=$1 and user_id=$2`,
-    [chatId, userId]
-  );
-  return res.rows[0] || null;
-}
-
-export async function consumePaidFlip(chatId, userId) {
-  const res = await pool.query(
-    `
-    update pf_users
-    set paid_flips = greatest(0, paid_flips - 1)
-    where chat_id=$1 and user_id=$2 and paid_flips > 0
-    returning paid_flips
-    `,
-    [chatId, userId]
-  );
-  return res.rowCount > 0;
-}
-
-export async function recordFreeRub(chatId, userId, utcNow) {
-  await pool.query(
-    `update pf_users set last_rub_free_at=$1 where chat_id=$2 and user_id=$3`,
-    [utcNow.toISOString(), chatId, userId]
-  );
-}
-
-export async function addPaidFlips(chatId, userId, flips) {
-  const n = Math.max(0, Math.floor(Number(flips) || 0));
-  if (n <= 0) return await getUser(chatId, userId);
-  await pool.query(
-    `update pf_users set paid_flips = paid_flips + $1 where chat_id=$2 and user_id=$3`,
-    [n, chatId, userId]
-  );
-  return await getUser(chatId, userId);
-}
-
-export async function createRubPayment(chatId, userId, flips, amountDrops, destTag) {
-  const res = await pool.query(
-    `
-    insert into pf_rub_payments (chat_id, user_id, flips, amount_drops, dest_tag, status)
-    values ($1,$2,$3,$4,$5,'pending')
-    returning *
-    `,
-    [chatId, userId, flips, amountDrops, destTag]
-  );
-  return res.rows[0];
-}
-
-export async function fulfillRubPayment(id, txHash) {
-  const res = await pool.query(
-    `update pf_rub_payments set status='fulfilled', tx_hash=$2, fulfilled_at=now() where id=$1 returning *`,
-    [id, txHash]
-  );
-  return res.rows[0] || null;
-}
-
-export async function expireRubPayment(id) {
-  await pool.query(
-    `update pf_rub_payments set status='expired' where id=$1 and status='pending'`,
-    [id]
-  );
 }
 
 export async function getOpenChallengeByMessageId(chatId, messageId) {
@@ -294,13 +194,14 @@ function toUtcDateString(d) {
 }
 
 export async function createChallenge(chatId, attackerUserId, betCm, messageId) {
+  const bet = roundCm(betCm);
   const res = await pool.query(
     `
     insert into pf_challenges (chat_id, attacker_user_id, bet_cm, message_id, status)
     values ($1, $2, $3, $4, 'open')
     returning *
     `,
-    [chatId, attackerUserId, betCm, messageId || null]
+    [chatId, attackerUserId, bet, messageId || null]
   );
   return res.rows[0];
 }
@@ -324,7 +225,6 @@ export async function resolveChallengeTransaction(challengeId, chatId, acceptorU
   const client = await pool.connect();
   try {
     await client.query('begin');
-    // Lock the challenge row
     const chRes = await client.query(
       `select * from pf_challenges where id=$1 and chat_id=$2 for update`,
       [challengeId, chatId]
@@ -339,13 +239,12 @@ export async function resolveChallengeTransaction(challengeId, chatId, acceptorU
       return { ok: false, reason: 'already_resolved' };
     }
     const attackerId = Number(challenge.attacker_user_id);
-    const betCm = Number(challenge.bet_cm);
+    const betCm = roundCm(challenge.bet_cm);
     const acceptorId = Number(acceptorUserId);
     if (attackerId === acceptorId) {
       await client.query('rollback');
       return { ok: false, reason: 'self_accept' };
     }
-    // Lock both users
     const usersRes = await client.query(
       `select * from pf_users where chat_id=$1 and user_id in ($2, $3) for update`,
       [chatId, attackerId, acceptorId]
@@ -360,27 +259,25 @@ export async function resolveChallengeTransaction(challengeId, chatId, acceptorU
       await client.query('rollback');
       return { ok: false, reason: 'missing_user' };
     }
-    if (attacker.length_cm < betCm) {
+    if (Number(attacker.length_cm) < betCm) {
       await client.query('rollback');
       return { ok: false, reason: 'attacker_insufficient' };
     }
-    if (acceptor.length_cm < betCm) {
+    if (Number(acceptor.length_cm) < betCm) {
       await client.query('rollback');
       return { ok: false, reason: 'acceptor_insufficient' };
     }
     const attackerWins = rng() < 0.5;
     const winnerId = attackerWins ? attackerId : acceptorId;
     const loserId = attackerWins ? acceptorId : attackerId;
-    // Apply transfers and stats
     await client.query(
-      `update pf_users set length_cm = length_cm + $1, wins = wins + 1 where chat_id=$2 and user_id=$3`,
+      `update pf_users set length_cm = round((length_cm + $1)::numeric, 2), wins = wins + 1 where chat_id=$2 and user_id=$3`,
       [betCm, chatId, winnerId]
     );
     await client.query(
-      `update pf_users set length_cm = greatest(0, length_cm - $1), losses = losses + 1 where chat_id=$2 and user_id=$3`,
+      `update pf_users set length_cm = round(greatest(0, length_cm - $1)::numeric, 2), losses = losses + 1 where chat_id=$2 and user_id=$3`,
       [betCm, chatId, loserId]
     );
-    // Close challenge
     await client.query(
       `update pf_challenges set status='resolved', accepted_by_user_id=$1, winner_user_id=$2 where id=$3`,
       [acceptorId, winnerId, challengeId]
@@ -419,12 +316,10 @@ export async function getPotd(chatId, utcDate) {
   return res.rows[0] || null;
 }
 
-export async function selectOrCreatePotd(chatId, utcDate, rng = Math.random) {
+export async function selectOrCreatePotd(chatId, utcDate) {
   const dateStr = toUtcDateString(utcDate);
-  // If already exists, return it
   const existing = await getPotd(chatId, utcDate);
   if (existing) return existing;
-  // Pick random user in chat
   const pickRes = await pool.query(
     `select user_id from pf_users where chat_id=$1 order by random() limit 1`,
     [chatId]
@@ -433,14 +328,11 @@ export async function selectOrCreatePotd(chatId, utcDate, rng = Math.random) {
     return null;
   }
   const chosenUserId = pickRes.rows[0].user_id;
-  // Insert if not exists (handles races)
   await pool.query(
     `insert into pf_potd (chat_id, for_date, user_id) values ($1, $2::date, $3) on conflict do nothing`,
     [chatId, dateStr, chosenUserId]
   );
-  // Return final selection
-  const finalRow = await getPotd(chatId, utcDate);
-  return finalRow;
+  return await getPotd(chatId, utcDate);
 }
 
 export async function getTopUsers(chatId, limit = 10) {
@@ -455,15 +347,6 @@ export async function getTopUsers(chatId, limit = 10) {
     [chatId, Math.max(1, Math.min(limit, 50))]
   );
   return res.rows;
-}
-
-export async function getGroupAverageLength(chatId) {
-  const res = await pool.query(
-    `select avg(length_cm) as avg from pf_users where chat_id = $1`,
-    [chatId]
-  );
-  const v = res.rows[0] && res.rows[0].avg;
-  return v === null || v === undefined ? null : Number(v);
 }
 
 export async function getGlobalAverageLength() {
@@ -504,31 +387,6 @@ export async function getGroupAverageAndRank(chatId) {
   };
 }
 
-export async function createPayment(chatId, userId, tier, minGainCm, maxGainCm, amountDrops, destTag) {
-  const res = await pool.query(
-    `insert into pf_payments (chat_id, user_id, tier, min_gain_cm, max_gain_cm, amount_drops, dest_tag, status)
-     values ($1,$2,$3,$4,$5,$6,$7,'pending') returning *`,
-    [chatId, userId, tier, minGainCm, maxGainCm, amountDrops, destTag]
-  );
-  return res.rows[0];
-}
-
-export async function fulfillPayment(id, txHash, creditedCm) {
-  const res = await pool.query(
-    `update pf_payments set status='fulfilled', tx_hash=$2, credited_cm=$3, fulfilled_at=now() where id=$1 returning *`,
-    [id, txHash, creditedCm]
-  );
-  return res.rows[0] || null;
-}
-
-export async function expirePayment(id) {
-  await pool.query(
-    `update pf_payments set status='expired' where id=$1 and status='pending'`,
-    [id]
-  );
-}
-
-// Images config
 export async function ensureImageDefaults(defaultsMap) {
   const keys = Object.keys(defaultsMap || {});
   if (keys.length === 0) return;
@@ -537,8 +395,33 @@ export async function ensureImageDefaults(defaultsMap) {
     await client.query('begin');
     for (const k of keys) {
       const url = defaultsMap[k];
+      if (!url) continue;
       await client.query(
         `insert into pf_images (key, url) values ($1, $2) on conflict (key) do nothing`,
+        [k, url]
+      );
+    }
+    await client.query('commit');
+  } catch (e) {
+    try { await client.query('rollback'); } catch {}
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
+/** Force-set image keys (overwrites existing DB values). */
+export async function forceImageDefaults(defaultsMap) {
+  const entries = Object.entries(defaultsMap || {}).filter(([, url]) => url);
+  if (entries.length === 0) return;
+  const client = await pool.connect();
+  try {
+    await client.query('begin');
+    for (const [k, url] of entries) {
+      await client.query(
+        `insert into pf_images (key, url, updated_at)
+         values ($1, $2, now())
+         on conflict (key) do update set url = excluded.url, updated_at = now()`,
         [k, url]
       );
     }
@@ -566,5 +449,3 @@ export async function setImageUrl(key, url) {
   );
   return res.rows[0];
 }
-
-

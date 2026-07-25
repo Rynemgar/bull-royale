@@ -1,15 +1,15 @@
-# Phallic Fury (Telegram Game Bot)
+# Bull Royale (Telegram Game Bot)
 
-A Telegram group game where members can grow their "length", challenge others to sword fights, and track stats. Built with Node.js, node-telegram-bot-api, and Postgres. Deployable to Heroku.
+A Telegram group game where members grow their horns, challenge others to horn clashes, and track stats. Built with Node.js, node-telegram-bot-api, and Postgres. Deployable to Heroku.
 
 ## Features
 
-- `/grow` once per day (UTC reset at midnight): random delta from -5cm to +10cm.
-- `/attack <bet_cm>`: posts a challenge with an "En Guard" button. First to accept fights the challenger; winner takes the bet from the loser.
-- `/stats`: shows your length and win/loss percentage.
-- `/PhallusOfTheDay`: selects a random member as "Dick of the day" and shows them until midnight UTC.
-- `/wank`: 10% chance to swell +10%; otherwise shrink by a random 10–90%. Wank carefully.
-- `/average`: shows this group's average and the overall average across all groups (crudely worded).
+- `/grow` every **8 hours**: random horn delta (mostly gains, occasional shrinkage). Sizes use **2 decimal places** (e.g. `12.18cm`).
+- **Snap risk**: if horns are over **100cm**, there is a **5%** chance they snap to a stump of at most **5.00cm** (checked after grow and after clashes).
+- `/attack <bet_cm>`: posts a Horn Clash challenge. First to accept fights; winner takes the bet. Bets support decimals (e.g. `/attack 12.18`).
+- `/stats`: horn length and win/loss.
+- `/bulloftheday`: random "Bull of the Day" until midnight UTC.
+- `/top`, `/average`: leaderboard and averages.
 - Stats are isolated per Telegram group.
 
 ## Requirements
@@ -22,8 +22,8 @@ A Telegram group game where members can grow their "length", challenge others to
 
 - `TELEGRAM_BOT_TOKEN` (required)
 - `DATABASE_URL` (required in production; local Postgres supported)
-- `WEBHOOK_DOMAIN` (required for Heroku/webhook deployments, e.g. `https://your-app.herokuapp.com`)
 - `PORT` (Heroku provides this automatically)
+- `ALERT_DESTINATION` (optional; where new-group alerts are sent)
 
 > Note: You can create a local `.env` file with these variables for local development.
 
@@ -41,7 +41,7 @@ npm start
 
 Ensure `DATABASE_URL` points to your local Postgres (or a remote DB you control).
 
-## Deploy to Heroku (Webhook)
+## Deploy to Heroku
 
 1. Create the Heroku app and add Postgres:
    ```bash
@@ -51,23 +51,17 @@ Ensure `DATABASE_URL` points to your local Postgres (or a remote DB you control)
 2. Configure environment variables:
    ```bash
    heroku config:set TELEGRAM_BOT_TOKEN=your-token
-   heroku config:set WEBHOOK_DOMAIN=https://your-app-name.herokuapp.com
    ```
    Heroku will set `DATABASE_URL` automatically.
-3. Deploy:
+3. Deploy and scale:
    ```bash
    git push heroku main
+   heroku ps:scale worker=1
    ```
-4. Scale a web dyno:
-   ```bash
-   heroku ps:scale web=1
-   ```
-5. Add the bot to your Telegram group(s) and start playing!
+4. Add the bot to your Telegram group(s) and start playing!
 
 ## Notes
 
-- The bot uses webhook mode (Express) when `WEBHOOK_DOMAIN` and `PORT` are present; otherwise, it falls back to long polling for local development.
-- Length cannot go below 0cm.
+- Horn length cannot go below 0cm.
 - Fights select a random winner 50/50.
-
-
+- Free `/grow` cooldown is 8 hours (not once per day).

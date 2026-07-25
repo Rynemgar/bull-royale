@@ -99,6 +99,45 @@ function resolveMedia(key) {
   };
 }
 
+function isLocalMediaPath(ref) {
+  if (!ref || typeof ref !== 'string') return false;
+  const raw = unwrapMediaRef(ref);
+  return typeof raw === 'string' &&
+    (raw.includes(path.sep) || raw.includes('/')) &&
+    fs.existsSync(raw);
+}
+
+/** After uploading a local asset once, persist Telegram file_id for reuse. */
+async function cacheSentMediaFileId(key, sentMsg) {
+  const current = getImageUrl(key);
+  if (!isLocalMediaPath(current)) return;
+
+  let stored = null;
+  if (sentMsg?.video?.file_id) {
+    stored = `video:${sentMsg.video.file_id}`;
+  } else if (sentMsg?.animation?.file_id) {
+    stored = `animation:${sentMsg.animation.file_id}`;
+  } else if (Array.isArray(sentMsg?.photo) && sentMsg.photo.length > 0) {
+    const best = sentMsg.photo.reduce((a, b) => ((a.file_size || 0) > (b.file_size || 0) ? a : b));
+    stored = best.file_id;
+  }
+  if (!stored) return;
+
+  const localPath = unwrapMediaRef(current);
+  const keysToUpdate = new Set([key]);
+  for (const [k, v] of Object.entries(imagesCache)) {
+    if (isLocalMediaPath(v) && unwrapMediaRef(v) === localPath) keysToUpdate.add(k);
+  }
+  for (const k of keysToUpdate) {
+    imagesCache[k] = stored;
+    try {
+      await setImageUrl(k, stored);
+    } catch (e) {
+      console.error('Failed to cache media file_id', k, e?.message || e);
+    }
+  }
+}
+
 async function sendKeyedMedia(chatId, key, options = {}) {
   const resolved = resolveMedia(key);
   if (!resolved || !resolved.media) {
@@ -109,13 +148,21 @@ async function sendKeyedMedia(chatId, key, options = {}) {
       reply_markup: rest.reply_markup
     });
   }
+  const uploadingLocal = isLocalMediaPath(getImageUrl(key));
+  let msg;
   if (resolved.type === 'video') {
-    return bot.sendVideo(chatId, resolved.media, options);
+    msg = await bot.sendVideo(chatId, resolved.media, options);
+  } else if (resolved.type === 'animation') {
+    msg = await bot.sendAnimation(chatId, resolved.media, options);
+  } else {
+    msg = await bot.sendPhoto(chatId, resolved.media, options);
   }
-  if (resolved.type === 'animation') {
-    return bot.sendAnimation(chatId, resolved.media, options);
+  if (uploadingLocal && msg) {
+    cacheSentMediaFileId(key, msg).catch((e) => {
+      console.error('cacheSentMediaFileId error', e?.message || e);
+    });
   }
-  return bot.sendPhoto(chatId, resolved.media, options);
+  return msg;
 }
 
 function getUtcNow() {

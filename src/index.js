@@ -99,6 +99,19 @@ function resolveMedia(key) {
   };
 }
 
+function mediaContentType(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.png') return 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.gif') return 'image/gif';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.mp4') return 'video/mp4';
+  if (ext === '.mov') return 'video/quicktime';
+  if (ext === '.webm') return 'video/webm';
+  if (ext === '.m4v') return 'video/x-m4v';
+  return 'application/octet-stream';
+}
+
 async function sendKeyedMedia(chatId, key, options = {}) {
   const resolved = resolveMedia(key);
   if (!resolved || !resolved.media) {
@@ -109,13 +122,63 @@ async function sendKeyedMedia(chatId, key, options = {}) {
       reply_markup: rest.reply_markup
     });
   }
+
+  const media = resolved.media;
+  const isLocalFile =
+    typeof media === 'string' &&
+    (media.includes(path.sep) || media.includes('/')) &&
+    fs.existsSync(media);
+
+  // Local uploads must put caption/parse_mode in multipart formData.
+  // The library puts them in qs alongside formData, and HTML links in captions get dropped.
+  if (isLocalFile) {
+    const field =
+      resolved.type === 'video' ? 'video' :
+      resolved.type === 'animation' ? 'animation' :
+      'photo';
+    const method =
+      resolved.type === 'video' ? 'sendVideo' :
+      resolved.type === 'animation' ? 'sendAnimation' :
+      'sendPhoto';
+    const formData = {
+      chat_id: String(chatId),
+      [field]: {
+        value: fs.createReadStream(media),
+        options: {
+          filename: path.basename(media),
+          contentType: mediaContentType(media)
+        }
+      }
+    };
+    if (options.caption != null) formData.caption = options.caption;
+    if (options.parse_mode) formData.parse_mode = options.parse_mode;
+    else formData.parse_mode = 'HTML';
+    if (options.reply_markup) formData.reply_markup = JSON.stringify(options.reply_markup);
+    if (options.disable_notification != null) {
+      formData.disable_notification = String(!!options.disable_notification);
+    }
+    return bot._request(method, { formData });
+  }
+
+  // file_id / URL: use form body so HTML caption links aren't dropped from qs
+  const form = {
+    chat_id: chatId,
+    caption: options.caption,
+    parse_mode: options.parse_mode || 'HTML'
+  };
+  if (options.reply_markup) form.reply_markup = options.reply_markup;
+  if (options.disable_notification != null) form.disable_notification = options.disable_notification;
+
   if (resolved.type === 'video') {
-    return bot.sendVideo(chatId, resolved.media, options);
+    form.video = media;
+    return bot._request('sendVideo', { form });
   }
   if (resolved.type === 'animation') {
-    return bot.sendAnimation(chatId, resolved.media, options);
+    form.animation = media;
+    return bot._request('sendAnimation', { form });
   }
-  return bot.sendPhoto(chatId, resolved.media, options);
+  form.photo = media;
+  return bot._request('sendPhoto', { form });
 }
 
 function getUtcNow() {
@@ -195,7 +258,6 @@ function sendWithFooter(chatId, text, options) {
 
 await initSchema();
 const bot = new TelegramBot(token, { polling: true });
-const ALERT_DESTINATION = process.env.ALERT_DESTINATION || '@rippledickcto';
 const BOT_INFO = await bot.getMe();
 const BOT_ID = BOT_INFO.id;
 const BOT_USERNAME = BOT_INFO.username;
@@ -236,45 +298,24 @@ async function notifyBotAddedToGroup(chat, actor) {
     if (last && now - last < WELCOME_DEDUPE_MS) return;
     recentGroupWelcomes.set(chatId, now);
 
-    const title = chat.title || '(no title)';
-    const type = chat.type || 'unknown';
-    let invite = '';
-    if (chat.username) {
-      invite = `Invite: https://t.me/${chat.username}\n`;
-    } else {
-      try {
-        const exported = await bot.exportChatInviteLink(chatId);
-        if (exported) invite = `Invite: ${exported}\n`;
-      } catch {}
-    }
     // Welcome the group with the Bull Royale poster + command breakdown
-    try {
-      await sendKeyedMedia(chatId, 'poster', {
-        parse_mode: 'HTML',
-        caption: addFooter(
-          `<b>Bull Royale</b> has entered the arena.\n` +
-          `Grow. Duel. Steal horns.\n\n` +
-          `<b>Commands</b>\n` +
-          `/grow — Grow your horns (every 8h)\n` +
-          `/attack &lt;bet&gt; — Challenge a Horn Clash\n` +
-          `/stats — Horn length &amp; W/L\n` +
-          `/top — Top 10 in this group\n` +
-          `/average — Group &amp; global averages\n` +
-          `/bulloftheday — Today's random champion\n\n` +
-          `Use /grow to start.`
-        )
-      });
-    } catch (e) {
-      console.error('Failed to send poster to group', e);
-    }
-    const text =
-      `Bull Royale bot added to a new ${type}\n` +
-      `Title: ${title}\n` +
-      invite +
-      `Looks like more horns are about to grow.\n`;
-    await bot.sendMessage(ALERT_DESTINATION, text);
+    await sendKeyedMedia(chatId, 'poster', {
+      parse_mode: 'HTML',
+      caption: addFooter(
+        `<b>Bull Royale</b> has entered the arena.\n` +
+        `Grow. Duel. Steal horns.\n\n` +
+        `<b>Commands</b>\n` +
+        `/grow — Grow your horns (every 8h)\n` +
+        `/attack &lt;bet&gt; — Challenge a Horn Clash\n` +
+        `/stats — Horn length &amp; W/L\n` +
+        `/top — Top 10 in this group\n` +
+        `/average — Group &amp; global averages\n` +
+        `/bulloftheday — Today's random champion\n\n` +
+        `Use /grow to start.`
+      )
+    });
   } catch (e) {
-    console.error('Failed to notify new group join', e);
+    console.error('Failed to welcome new group', e?.message || e);
   }
 }
 

@@ -225,8 +225,17 @@ bot.on('polling_error', (err) => {
   console.error('[polling_error]', err?.message || err);
 });
 
+const recentGroupWelcomes = new Map(); // chatId -> timestamp
+const WELCOME_DEDUPE_MS = 60_000;
+
 async function notifyBotAddedToGroup(chat, actor) {
   try {
+    const chatId = chat.id;
+    const now = Date.now();
+    const last = recentGroupWelcomes.get(chatId);
+    if (last && now - last < WELCOME_DEDUPE_MS) return;
+    recentGroupWelcomes.set(chatId, now);
+
     const title = chat.title || '(no title)';
     const type = chat.type || 'unknown';
     let invite = '';
@@ -234,13 +243,13 @@ async function notifyBotAddedToGroup(chat, actor) {
       invite = `Invite: https://t.me/${chat.username}\n`;
     } else {
       try {
-        const exported = await bot.exportChatInviteLink(chat.id);
+        const exported = await bot.exportChatInviteLink(chatId);
         if (exported) invite = `Invite: ${exported}\n`;
       } catch {}
     }
     // Welcome the group with the Bull Royale poster + command breakdown
     try {
-      await sendKeyedMedia(chat.id, 'poster', {
+      await sendKeyedMedia(chatId, 'poster', {
         parse_mode: 'HTML',
         caption: addFooter(
           `<b>Bull Royale</b> has entered the arena.\n` +

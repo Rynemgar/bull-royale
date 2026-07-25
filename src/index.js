@@ -99,86 +99,23 @@ function resolveMedia(key) {
   };
 }
 
-function mediaContentType(filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  if (ext === '.png') return 'image/png';
-  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
-  if (ext === '.gif') return 'image/gif';
-  if (ext === '.webp') return 'image/webp';
-  if (ext === '.mp4') return 'video/mp4';
-  if (ext === '.mov') return 'video/quicktime';
-  if (ext === '.webm') return 'video/webm';
-  if (ext === '.m4v') return 'video/x-m4v';
-  return 'application/octet-stream';
-}
-
 async function sendKeyedMedia(chatId, key, options = {}) {
   const resolved = resolveMedia(key);
-  const {
-    caption,
-    parse_mode = 'HTML',
-    reply_markup,
-    disable_notification
-  } = options;
-
   if (!resolved || !resolved.media) {
+    const { caption, ...rest } = options;
     return bot.sendMessage(chatId, caption || '', {
-      parse_mode,
+      parse_mode: rest.parse_mode || 'HTML',
       disable_web_page_preview: true,
-      reply_markup
+      reply_markup: rest.reply_markup
     });
   }
-
-  const media = resolved.media;
-  const isLocalFile =
-    typeof media === 'string' &&
-    (media.includes(path.sep) || media.includes('/')) &&
-    fs.existsSync(media);
-
-  // Send media without caption first. HTML <a> links in captions are dropped when
-  // bundled with multipart uploads; editMessageCaption uses form and keeps them.
-  const field =
-    resolved.type === 'video' ? 'video' :
-    resolved.type === 'animation' ? 'animation' :
-    'photo';
-  const method =
-    resolved.type === 'video' ? 'sendVideo' :
-    resolved.type === 'animation' ? 'sendAnimation' :
-    'sendPhoto';
-
-  let msg;
-  if (isLocalFile) {
-    const formData = {
-      chat_id: String(chatId),
-      [field]: {
-        value: fs.createReadStream(media),
-        options: {
-          filename: path.basename(media),
-          contentType: mediaContentType(media)
-        }
-      }
-    };
-    if (reply_markup) formData.reply_markup = JSON.stringify(reply_markup);
-    if (disable_notification != null) {
-      formData.disable_notification = String(!!disable_notification);
-    }
-    msg = await bot._request(method, { formData });
-  } else {
-    const form = { chat_id: chatId, [field]: media };
-    if (reply_markup) form.reply_markup = reply_markup;
-    if (disable_notification != null) form.disable_notification = disable_notification;
-    msg = await bot._request(method, { form });
+  if (resolved.type === 'video') {
+    return bot.sendVideo(chatId, resolved.media, options);
   }
-
-  if (caption != null && caption !== '' && msg?.message_id) {
-    await bot.editMessageCaption(caption, {
-      chat_id: chatId,
-      message_id: msg.message_id,
-      parse_mode,
-      reply_markup
-    });
+  if (resolved.type === 'animation') {
+    return bot.sendAnimation(chatId, resolved.media, options);
   }
-  return msg;
+  return bot.sendPhoto(chatId, resolved.media, options);
 }
 
 function getUtcNow() {

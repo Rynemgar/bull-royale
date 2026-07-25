@@ -162,7 +162,7 @@ async function maybeSnapHorns(chatId, userId, currentLength) {
   return { snapped: true, before, after: stump };
 }
 
-const FOOTER_HTML = `\n\n<a href="https://t.me/rippledickcto">Bull Royale</a>`;
+const FOOTER_HTML = `\n\n<a href="https://t.me/DomIncXRP">Bull Royale - Part of Dom Inc</a>`;
 function addFooter(text) {
   return `${text}${FOOTER_HTML}`;
 }

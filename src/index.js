@@ -247,6 +247,17 @@ const BOT_ID = BOT_INFO.id;
 const BOT_USERNAME = BOT_INFO.username;
 console.log(`[startup] Bot ID=${BOT_ID} username=@${BOT_USERNAME}`);
 
+/** Exact /cmd or /cmd@ThisBot only — not /cmdExtra or /cmd@OtherBot */
+function commandRegex(command, argsPattern = '') {
+  const at = BOT_USERNAME
+    ? `(?:@${BOT_USERNAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})?`
+    : '';
+  if (!argsPattern) {
+    return new RegExp(`^/${command}${at}(?:\\s|$)`, 'i');
+  }
+  return new RegExp(`^/${command}${at}${argsPattern}`, 'i');
+}
+
 async function reloadImagesCache() {
   const rows = await getAllImages();
   const next = { ...DEFAULT_IMAGES };
@@ -348,7 +359,7 @@ async function performGrow(chatId, user) {
 }
 
 // /grow
-bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
+bot.onText(commandRegex('grow'), async (msg) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
   const user = msg.from;
@@ -368,7 +379,7 @@ bot.onText(/^\/grow(@\w+)?\b/i, async (msg) => {
 });
 
 // /average
-bot.onText(/^\/average(@\w+)?\b/i, async (msg) => {
+bot.onText(commandRegex('average'), async (msg) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
   await ensureUser(chatId, msg.from);
@@ -394,13 +405,13 @@ bot.onText(/^\/average(@\w+)?\b/i, async (msg) => {
 });
 
 // /give @user <amount> — players transfer; admins can award/deduct
-bot.onText(/^\/give(@\w+)?\s+(.+?)\s+(-?\d+(?:\.\d{1,2})?)\b/i, async (msg, match) => {
+bot.onText(commandRegex('give', '\\s+(.+?)\\s+(-?\\d+(?:\\.\\d{1,2})?)(?:\\s|$)'), async (msg, match) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
   const from = msg.from;
   await ensureUser(chatId, from);
-  const targetRef = (match?.[2] || '').trim();
-  const amount = roundCm(parseFloat(match?.[3] || '0'));
+  const targetRef = (match?.[1] || '').trim();
+  const amount = roundCm(parseFloat(match?.[2] || '0'));
   try {
     const isAdmin = isAdminUser(from.id);
     let targetUserId = null;
@@ -472,7 +483,7 @@ bot.onText(/^\/give(@\w+)?\s+(.+?)\s+(-?\d+(?:\.\d{1,2})?)\b/i, async (msg, matc
 });
 
 // /top
-bot.onText(/^\/top(@\w+)?\b/i, async (msg) => {
+bot.onText(commandRegex('top'), async (msg) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
   await ensureUser(chatId, msg.from);
@@ -494,13 +505,13 @@ bot.onText(/^\/top(@\w+)?\b/i, async (msg) => {
 });
 
 // /attack <bet>
-bot.onText(/^\/attack(@\w+)?(?:\s+(\d+(?:\.\d{1,2})?))?/i, async (msg, match) => {
+bot.onText(commandRegex('attack', '(?:\\s+(\\d+(?:\\.\\d{1,2})?))?(?:\\s|$)'), async (msg, match) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
   const user = msg.from;
   const userId = user.id;
   await ensureUser(chatId, user);
-  const bet = roundCm(parseFloat(match?.[2] || ''));
+  const bet = roundCm(parseFloat(match?.[1] || ''));
   if (!bet || !Number.isFinite(bet) || bet <= 0) {
     await sendWithGrow(chatId, 'Usage: /attack &lt;bet_cm&gt; (e.g. /attack 12.18)');
     return;
@@ -536,7 +547,7 @@ bot.onText(/^\/attack(@\w+)?(?:\s+(\d+(?:\.\d{1,2})?))?/i, async (msg, match) =>
 });
 
 // /update — admin image dashboard
-bot.onText(/^\/update(@\w+)?\b/i, async (msg) => {
+bot.onText(commandRegex('update'), async (msg) => {
   if (!msg.chat || !msg.from) return;
   if (!isAdminUser(msg.from.id)) return;
   const chatId = msg.chat.id;
@@ -557,13 +568,13 @@ bot.onText(/^\/update(@\w+)?\b/i, async (msg) => {
 const pendingImageUpdate = new Map();
 
 // /stats
-bot.onText(/^\/stats(@\w+)?(?:\s+(.+))?/i, async (msg, match) => {
+bot.onText(commandRegex('stats', '(?:\\s+(.+))?(?:\\s|$)'), async (msg, match) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
   const user = msg.from;
   await ensureUser(chatId, user);
   try {
-    const targetRef = (match?.[2] || '').trim();
+    const targetRef = (match?.[1] || '').trim();
     let targetUserId = user.id;
     let targetRow = null;
     if (targetRef) {
@@ -604,7 +615,7 @@ bot.onText(/^\/stats(@\w+)?(?:\s+(.+))?/i, async (msg, match) => {
 });
 
 // /bulloftheday
-bot.onText(/^\/bulloftheday(@\w+)?\b/i, async (msg) => {
+bot.onText(commandRegex('bulloftheday'), async (msg) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
   await ensureUser(chatId, msg.from);

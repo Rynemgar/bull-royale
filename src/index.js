@@ -45,14 +45,15 @@ const ASSETS_DIR = path.join(__dirname, '..', 'assets');
 const POSTER_IMAGE = path.join(ASSETS_DIR, 'poster.png');
 const GROW_IMAGE = path.join(ASSETS_DIR, 'grow.png');
 const SNAP_IMAGE = path.join(ASSETS_DIR, 'snap.png');
+const ATTACK_VIDEO = path.join(ASSETS_DIR, 'IMG_1976.MP4');
 
-// Local asset defaults. Attack media is set later via /update (photo or video).
+// Local asset defaults. Can be overridden later via /update (photo or video).
 const DEFAULT_IMAGES = {
   poster: POSTER_IMAGE,
   grow: GROW_IMAGE,
   snap: SNAP_IMAGE,
   shrunk: SNAP_IMAGE,
-  attack: null,
+  attack: ATTACK_VIDEO,
   attack_resolved: null
 };
 let imagesCache = { ...DEFAULT_IMAGES };

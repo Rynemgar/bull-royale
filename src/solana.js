@@ -13,6 +13,7 @@ import {
   createTransferInstruction,
   getMint,
   getAccount,
+  getTokenMetadata,
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID
@@ -185,32 +186,102 @@ function readBorshString(buf, offset) {
   return { value: buf.slice(start, end).toString('utf8'), next: end };
 }
 
-/** Best-effort Metaplex metadata name; falls back to short mint. */
-export async function getTokenMetadataName(mintStr) {
-  const short = `${mintStr.slice(0, 4)}…${mintStr.slice(-4)}`;
-  try {
-    const mint = new PublicKey(mintStr);
-    const [pda] = PublicKey.findProgramAddressSync(
-      [Buffer.from('metadata'), METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-      METADATA_PROGRAM_ID
-    );
-    const conn = getConnection();
-    const info = await conn.getAccountInfo(pda);
-    if (!info?.data) return short;
-    const data = Buffer.from(info.data);
-    // Skip key(1) + update auth(32) + mint(32)
-    let offset = 1 + 32 + 32;
-    const name = readBorshString(data, offset);
-    if (!name.value) return short;
-    offset = name.next;
-    const symbol = readBorshString(data, offset);
-    const cleanName = name.value.replace(/\0/g, '').trim();
-    const cleanSymbol = symbol.value ? symbol.value.replace(/\0/g, '').trim() : '';
-    if (cleanSymbol && cleanName) return `${cleanName} (${cleanSymbol})`;
-    return cleanName || cleanSymbol || short;
-  } catch {
-    return short;
+function formatTokenLabel(name, symbol) {
+  const cleanName = (name || '').replace(/\0/g, '').trim();
+  const cleanSymbol = (symbol || '').replace(/\0/g, '').trim();
+  if (cleanName && cleanSymbol && cleanName.toLowerCase() !== cleanSymbol.toLowerCase()) {
+    return `${cleanName} (${cleanSymbol})`;
   }
+  return cleanName || cleanSymbol || null;
+}
+
+function shortMint(mintStr) {
+  return `${mintStr.slice(0, 4)}…${mintStr.slice(-4)}`;
+}
+
+async function nameFromMetaplex(mintStr) {
+  const mint = new PublicKey(mintStr);
+  const [pda] = PublicKey.findProgramAddressSync(
+    [Buffer.from('metadata'), METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    METADATA_PROGRAM_ID
+  );
+  const conn = getConnection();
+  const info = await conn.getAccountInfo(pda, 'confirmed');
+  if (!info?.data) return null;
+  const data = Buffer.from(info.data);
+  // key(1) + updateAuthority(32) + mint(32)
+  let offset = 1 + 32 + 32;
+  const name = readBorshString(data, offset);
+  if (!name.value) return null;
+  offset = name.next;
+  const symbol = readBorshString(data, offset);
+  return formatTokenLabel(name.value, symbol.value);
+}
+
+async function nameFromToken2022(mintStr) {
+  try {
+    const conn = getConnection();
+    const meta = await getTokenMetadata(conn, new PublicKey(mintStr));
+    if (!meta) return null;
+    return formatTokenLabel(meta.name, meta.symbol);
+  } catch {
+    return null;
+  }
+}
+
+async function nameFromDexScreener(mintStr) {
+  const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${mintStr}`, {
+    signal: AbortSignal.timeout(8000)
+  });
+  if (!res.ok) return null;
+  const json = await res.json();
+  const pair = Array.isArray(json?.pairs) ? json.pairs[0] : null;
+  const base = pair?.baseToken;
+  if (!base) return null;
+  // Prefer the side that matches our mint
+  const token =
+    base.address === mintStr
+      ? base
+      : pair?.quoteToken?.address === mintStr
+        ? pair.quoteToken
+        : base;
+  return formatTokenLabel(token.name, token.symbol);
+}
+
+async function nameFromJupiter(mintStr) {
+  const res = await fetch(`https://lite-api.jup.ag/tokens/v2/search?query=${encodeURIComponent(mintStr)}`, {
+    signal: AbortSignal.timeout(8000)
+  });
+  if (!res.ok) return null;
+  const json = await res.json();
+  const list = Array.isArray(json) ? json : [];
+  const hit = list.find((t) => t?.id === mintStr || t?.address === mintStr) || list[0];
+  if (!hit) return null;
+  return formatTokenLabel(hit.name, hit.symbol);
+}
+
+const tokenNameCache = new Map(); // mint -> { label, at }
+
+/** Resolve display name: Metaplex → Token-2022 → DexScreener → Jupiter → short mint. */
+export async function getTokenMetadataName(mintStr) {
+  const short = shortMint(mintStr);
+  const cached = tokenNameCache.get(mintStr);
+  if (cached && Date.now() - cached.at < 60 * 60 * 1000) return cached.label;
+
+  const resolvers = [nameFromMetaplex, nameFromToken2022, nameFromDexScreener, nameFromJupiter];
+  for (const resolve of resolvers) {
+    try {
+      const label = await resolve(mintStr);
+      if (label) {
+        tokenNameCache.set(mintStr, { label, at: Date.now() });
+        return label;
+      }
+    } catch (e) {
+      // try next source
+    }
+  }
+  tokenNameCache.set(mintStr, { label: short, at: Date.now() });
+  return short;
 }
 
 /**

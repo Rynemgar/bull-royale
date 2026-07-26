@@ -87,7 +87,8 @@ const DEFAULT_IMAGES = {
   snap: SNAP_IMAGE,
   shrunk: SNAP_IMAGE,
   attack: ATTACK_VIDEO,
-  attack_resolved: null
+  attack_resolved: null,
+  top: null
 };
 let imagesCache = { ...DEFAULT_IMAGES };
 function getImageUrl(key) {
@@ -690,7 +691,16 @@ bot.onText(commandRegex('top'), async (msg) => {
       const label = getUsernameLabel({ id: u.user_id, username: u.username, first_name: u.first_name });
       return `${idx + 1}. ${label} — ${formatCm(u.length_cm)}cm`;
     });
-    await sendWithGrow(chatId, `Top 10 horns:\n${lines.join('\n')}`);
+    const caption = `Top 10 horns:\n${lines.join('\n')}`;
+    if (getImageUrl('top')) {
+      await sendKeyedMedia(chatId, 'top', {
+        parse_mode: 'HTML',
+        caption: addFooter(caption),
+        ...withGrowButton({})
+      });
+    } else {
+      await sendWithGrow(chatId, caption);
+    }
   } catch (err) {
     console.error('top error', err);
     await sendWithGrow(chatId, 'Could not fetch leaderboard.');
@@ -748,6 +758,7 @@ bot.onText(commandRegex('update'), async (msg) => {
     [{ text: 'Update Poster', callback_data: 'imgupd:poster' }],
     [{ text: 'Update Grow', callback_data: 'imgupd:grow' }],
     [{ text: 'Update Snap', callback_data: 'imgupd:snap' }],
+    [{ text: 'Update Top', callback_data: 'imgupd:top' }],
     [{ text: 'Update Attack (photo/video)', callback_data: 'imgupd:attack' }],
     [{ text: 'Update Attack Resolved (photo/video)', callback_data: 'imgupd:attack_resolved' }]
   ];
@@ -1228,7 +1239,7 @@ bot.on('callback_query', async (query) => {
         return;
       }
       const key = data.split(':')[1];
-      const valid = ['poster', 'grow', 'snap', 'shrunk', 'attack', 'attack_resolved'];
+      const valid = ['poster', 'grow', 'snap', 'shrunk', 'top', 'attack', 'attack_resolved'];
       if (!valid.includes(key)) {
         if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Unknown media key.' });
         return;

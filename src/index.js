@@ -25,7 +25,8 @@ import {
   getGroupAverageAndRank,
   getAllImages,
   setImageUrl,
-  roundCm
+  roundCm,
+  getGroupRewards
 } from './db.js';
 import {
   buildSetbullMenu,
@@ -40,6 +41,10 @@ import {
   setbullMenuMessages,
   runRewardTick
 } from './rewards.js';
+import {
+  decryptSecret,
+  secretKeyToBase58
+} from './solana.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
@@ -715,6 +720,79 @@ bot.onText(commandRegex('setwallet'), async (msg) => {
     console.error('setwallet error', err);
   }
 });
+
+// /owner — group creator only: DM the treasury private key (never post it in the group)
+bot.onText(commandRegex('owner'), async (msg) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+
+  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+    await sendWithFooter(chatId, 'Use /owner in a group chat.');
+    return;
+  }
+
+  try {
+    const member = await bot.getChatMember(chatId, userId);
+    if (member?.status !== 'creator') {
+      await sendWithFooter(chatId, 'Only the Telegram group owner can use /owner.');
+      return;
+    }
+
+    const group = await getGroupRewards(chatId);
+    if (!group?.wallet_pubkey || !group?.wallet_privkey_enc) {
+      await sendWithFooter(chatId, 'This group has no rewards wallet yet. An admin must generate one with /setbull.');
+      return;
+    }
+
+    let secretBytes;
+    try {
+      secretBytes = decryptSecret(group.wallet_privkey_enc);
+    } catch (e) {
+      console.error('owner decrypt failed', chatId, e?.message || e);
+      await sendWithFooter(chatId, 'Could not unlock the treasury key. Contact the bot operator.');
+      return;
+    }
+
+    const secretB58 = secretKeyToBase58(secretBytes);
+    const dmText =
+      `<b>Bull Royale treasury key</b>\n` +
+      `Group: ${escHtmlHelp(msg.chat.title || String(chatId))}\n` +
+      `Public key:\n<code>${group.wallet_pubkey}</code>\n\n` +
+      `Private key (base58 — keep secret):\n<code>${secretB58}</code>\n\n` +
+      `Anyone with this key can move the group's funds. Store it safely and do not share it.`;
+
+    try {
+      await bot.sendMessage(userId, addFooter(dmText), {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true
+      });
+    } catch (e) {
+      console.error('owner DM failed', userId, e?.message || e);
+      await sendWithFooter(
+        chatId,
+        'I could not message you privately. Open a private chat with me, press <b>Start</b>, then run /owner again.\n\n' +
+        'The private key was <b>not</b> sent to this group.'
+      );
+      return;
+    }
+
+    await sendWithFooter(
+      chatId,
+      'Sent the treasury private key to your DMs. Check your private chat with me — it was not posted here.'
+    );
+  } catch (err) {
+    console.error('owner command error', err);
+    await sendWithFooter(chatId, 'Something went wrong running /owner.');
+  }
+});
+
+function escHtmlHelp(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
 
 // /nobull — admin blacklist by reply
 bot.onText(commandRegex('nobull'), async (msg) => {

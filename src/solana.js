@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import bs58 from 'bs58';
 import {
   Connection,
   Keypair,
@@ -83,6 +84,11 @@ export function generateGroupWallet() {
 
 export function keypairFromSecretBytes(secretBytes) {
   return Keypair.fromSecretKey(Uint8Array.from(secretBytes));
+}
+
+/** Base58 secret key for wallet import (Phantom, Solflare, etc.). */
+export function secretKeyToBase58(secretBytes) {
+  return bs58.encode(Uint8Array.from(secretBytes));
 }
 
 export function validateSolanaAddress(str) {

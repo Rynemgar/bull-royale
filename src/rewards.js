@@ -34,6 +34,13 @@ export const pendingSetwallet = new Map(); // userId -> { notifyChatId? }
 export const setbullMenuMessages = new Map();
 
 const BLACKLIST_PAGE_SIZE = 5;
+const MIN_PERIOD_HOURS = 1;
+/** Primary admin only — same as ADMIN_USER_ID in index.js */
+const RUN_REWARDS_NOW_USER_ID = 6933188641;
+
+function canRunRewardsNow(userId) {
+  return Number(userId) === RUN_REWARDS_NOW_USER_ID;
+}
 
 function escHtml(s) {
   return String(s ?? '')
@@ -60,7 +67,7 @@ async function refreshSetbullMenu(bot, chatId, addFooter, messageId = null) {
   const session = getSetbullSession(chatId);
   const menuId = messageId || session?.messageId;
   if (!menuId) return false;
-  const menu = await buildSetbullMenu(chatId);
+  const menu = await buildSetbullMenu(chatId, session?.ownerId);
   try {
     await bot.editMessageText(addFooter(menu.text), {
       chat_id: chatId,
@@ -80,7 +87,7 @@ async function refreshSetbullMenu(bot, chatId, addFooter, messageId = null) {
   }
 }
 
-export async function buildSetbullMenu(chatId) {
+export async function buildSetbullMenu(chatId, viewerUserId = null) {
   const row = await ensureGroupRewards(chatId);
   const lines = ['<b>Bull Royale Rewards</b>', ''];
   const keyboard = [];
@@ -126,7 +133,8 @@ export async function buildSetbullMenu(chatId) {
   lines.push(`Winners: ${row.winner_count}`);
   lines.push(`Timer: ${row.period_hours}h`);
   if (row.period_started_at) {
-    const end = new Date(new Date(row.period_started_at).getTime() + Number(row.period_hours) * 3600000);
+    const hours = Math.max(MIN_PERIOD_HOURS, Number(row.period_hours) || MIN_PERIOD_HOURS);
+    const end = new Date(new Date(row.period_started_at).getTime() + hours * 3600000);
     lines.push(`Period ends: ${end.toISOString()}`);
   } else {
     lines.push('Period: not started (set wallet + token + amount)');
@@ -136,6 +144,9 @@ export async function buildSetbullMenu(chatId) {
   keyboard.push([{ text: 'Set reward amount', callback_data: 'sb:setamount' }]);
   keyboard.push([{ text: 'Set number of winners', callback_data: 'sb:setwinners' }]);
   keyboard.push([{ text: 'Set timer', callback_data: 'sb:settimer' }]);
+  if (canRunRewardsNow(viewerUserId)) {
+    keyboard.push([{ text: 'Run Rewards Now', callback_data: 'sb:runnow' }]);
+  }
   keyboard.push([{ text: 'Blacklist', callback_data: 'sb:bl:0' }]);
   keyboard.push([{ text: 'Close', callback_data: 'sb:close' }]);
 
@@ -197,7 +208,7 @@ async function promptSetbullField(bot, chatId, user, field, prompt, menuMessageI
   });
 }
 
-export async function handleSetbullCallback(bot, query, addFooter) {
+export async function handleSetbullCallback(bot, query, addFooter, getUsernameLabel) {
   const data = query.data || '';
   const msg = query.message;
   const chatId = msg.chat.id;
@@ -313,9 +324,46 @@ export async function handleSetbullCallback(bot, query, addFooter) {
       chatId,
       query.from,
       'timer',
-      'Reply with the reward period in hours (default 72).',
+      `Reply with the reward period in hours (minimum ${MIN_PERIOD_HOURS}, default 72).`,
       msg.message_id
     );
+    return true;
+  }
+
+  if (data === 'sb:runnow') {
+    if (!canRunRewardsNow(fromId)) {
+      if (query.id) {
+        await bot.answerCallbackQuery(query.id, {
+          text: 'Only the primary admin can run rewards manually.',
+          show_alert: true
+        });
+      }
+      return true;
+    }
+    const group = await getGroupRewards(chatId);
+    if (!group?.wallet_pubkey || !group?.reward_mint || !(group.reward_amount > 0)) {
+      if (query.id) {
+        await bot.answerCallbackQuery(query.id, {
+          text: 'Set wallet, reward token, and amount first.',
+          show_alert: true
+        });
+      }
+      return true;
+    }
+    if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Running rewards now…' });
+    try {
+      await processGroupPayout(bot, group, addFooter, getUsernameLabel, { force: true });
+    } catch (e) {
+      console.error('manual run rewards failed', chatId, e?.message || e);
+      try {
+        await bot.sendMessage(
+          chatId,
+          addFooter(`Manual reward run failed: ${escHtml(e?.message || e)}`),
+          { parse_mode: 'HTML', disable_web_page_preview: true }
+        );
+      } catch {}
+    }
+    await refreshSetbullMenu(bot, chatId, addFooter, msg.message_id);
     return true;
   }
 
@@ -414,8 +462,8 @@ export async function handleSetbullPendingInput(bot, msg, addFooter) {
       }
     } else if (state.field === 'timer') {
       const hours = Number(text);
-      if (!Number.isFinite(hours) || hours <= 0 || hours > 8760) {
-        errText = 'Timer must be a positive number of hours.';
+      if (!Number.isFinite(hours) || hours < MIN_PERIOD_HOURS || hours > 8760) {
+        errText = `Timer must be at least ${MIN_PERIOD_HOURS} hour(s) (max 8760).`;
       } else {
         await updateGroupRewards(chatId, {
           period_hours: hours,
@@ -566,11 +614,45 @@ export async function handleNobull(bot, msg, addFooter, isAdminUser, getUsername
   );
 }
 
-async function processGroupPayout(bot, group, addFooter, getUsernameLabel) {
+const lastPayoutFailNotifyAt = new Map(); // chatId -> ms
+
+async function processGroupPayout(bot, group, addFooter, getUsernameLabel, options = {}) {
+  const force = Boolean(options.force);
   const chatId = group.chat_id;
-  const periodEnd = new Date(new Date(group.period_started_at).getTime() + Number(group.period_hours) * 3600000);
   const now = new Date();
-  if (now < periodEnd) return { paid: false };
+
+  if (!group.wallet_pubkey || !group.reward_mint || !(group.reward_amount > 0)) {
+    return { paid: false, due: false };
+  }
+
+  // Enforce minimum period length for scheduled payouts (manual run ignores the clock)
+  const periodHours = Math.max(MIN_PERIOD_HOURS, Number(group.period_hours) || MIN_PERIOD_HOURS);
+  if (!force) {
+    if (!group.period_started_at) return { paid: false, due: false };
+    const startedAt = new Date(group.period_started_at).getTime();
+    const periodMs = periodHours * 3600000;
+    if (!Number.isFinite(startedAt) || !Number.isFinite(periodMs) || periodMs <= 0) {
+      console.error('invalid reward period', chatId, group.period_started_at, group.period_hours);
+      return { paid: false };
+    }
+    const periodEnd = new Date(startedAt + periodMs);
+    if (now < periodEnd) return { paid: false, due: false };
+
+    console.log(
+      'reward period due',
+      chatId,
+      'ended',
+      periodEnd.toISOString(),
+      'amount',
+      group.reward_amount,
+      'winners',
+      group.winner_count
+    );
+  } else {
+    console.log('manual reward run', chatId, 'amount', group.reward_amount, 'winners', group.winner_count);
+    // Allow immediate failure feedback for admin-triggered runs
+    lastPayoutFailNotifyAt.delete(Number(chatId));
+  }
 
   const winners = await getEligibleRewardWinners(chatId, group.winner_count);
   if (!winners.length) {
@@ -581,27 +663,90 @@ async function processGroupPayout(bot, group, addFooter, getUsernameLabel) {
     try {
       await bot.sendMessage(
         chatId,
-        addFooter('Reward period ended, but no eligible winners (need horns + /setwallet, not blacklisted). Period restarted.'),
+        addFooter(
+          force
+            ? 'Manual reward run: no eligible winners (not blacklisted). Period restarted.'
+            : 'Reward period ended, but no eligible winners (not blacklisted). Period restarted.'
+        ),
         { parse_mode: 'HTML', disable_web_page_preview: true }
       );
     } catch {}
-    return { paid: false };
+    return { paid: false, due: true };
   }
 
+  // Split across all placements (winner_count slots filled); unpaid shares stay in treasury
   const shares = cascadingShares(group.reward_amount, winners.length);
-  let secret;
-  try {
-    secret = decryptSecret(group.wallet_privkey_enc);
-  } catch (e) {
-    console.error('decrypt treasury failed', chatId, e?.message || e);
-    return { paid: false, error: e };
+  const payableTotal = winners.reduce((sum, w, i) => {
+    if (w.solana_address) return sum + Number(shares[i] || 0);
+    return sum;
+  }, 0);
+
+  // Preflight only for the amount that will actually be sent
+  if (payableTotal > 0) {
+    try {
+      const bal = await getTokenBalance(group.wallet_pubkey, group.reward_mint);
+      if (bal.ui < payableTotal) {
+        console.error(
+          'treasury underfunded for payout',
+          chatId,
+          'have',
+          bal.ui,
+          'need',
+          payableTotal
+        );
+        await maybeNotifyPayoutBlocked(
+          bot,
+          chatId,
+          addFooter,
+          force
+            ? `Manual reward run blocked: treasury balance is ${bal.ui} (need ${payableTotal}).`
+            : `Reward period ended but treasury balance is ${bal.ui} (need ${payableTotal}). Period not restarted — will retry.`
+        );
+        return { paid: false, due: true, underfunded: true };
+      }
+    } catch (e) {
+      console.error('preflight balance check failed', chatId, e?.message || e);
+    }
   }
-  const fromKeypair = keypairFromSecretBytes(secret);
+
+  let fromKeypair = null;
+  const needsTransfers = winners.some((w) => w.solana_address);
+  if (needsTransfers) {
+    let secret;
+    try {
+      secret = decryptSecret(group.wallet_privkey_enc);
+    } catch (e) {
+      console.error('decrypt treasury failed', chatId, e?.message || e);
+      await maybeNotifyPayoutBlocked(
+        bot,
+        chatId,
+        addFooter,
+        'Reward payout blocked: could not unlock the treasury wallet key. Check WALLET_ENCRYPTION_KEY.'
+      );
+      return { paid: false, due: true, error: e };
+    }
+    fromKeypair = keypairFromSecretBytes(secret);
+    if (fromKeypair.publicKey.toBase58() !== group.wallet_pubkey) {
+      await maybeNotifyPayoutBlocked(
+        bot,
+        chatId,
+        addFooter,
+        'Reward payout blocked: treasury key does not match the configured wallet.'
+      );
+      return { paid: false, due: true, error: new Error('keypair mismatch') };
+    }
+  }
 
   const results = [];
   for (let i = 0; i < winners.length; i++) {
     const w = winners[i];
     const amount = shares[i];
+
+    if (!w.solana_address) {
+      results.push({ w, amount, ok: false, skipped: true, reason: 'no wallet' });
+      continue;
+    }
+
     try {
       const { signature } = await sendSplReward({
         fromKeypair,
@@ -614,7 +759,7 @@ async function processGroupPayout(bot, group, addFooter, getUsernameLabel) {
         userId: Number(w.user_id),
         amount,
         signature,
-        periodStartedAt: group.period_started_at
+        periodStartedAt: group.period_started_at || now
       });
       results.push({ w, amount, signature, ok: true });
     } catch (e) {
@@ -623,48 +768,63 @@ async function processGroupPayout(bot, group, addFooter, getUsernameLabel) {
     }
   }
 
+  const formatResultLine = (r, idx) => {
+    const label = getUsernameLabel({
+      id: r.w.user_id,
+      username: r.w.username,
+      first_name: r.w.first_name
+    });
+    if (r.ok) return `${idx + 1}. ${label} — ${r.amount} tokens`;
+    if (r.skipped) {
+      return `${idx + 1}. ${label} — ${r.amount} tokens (no wallet — /setwallet)`;
+    }
+    return `${idx + 1}. ${label} — ${r.amount} tokens — failed (${escHtml(r.error)})`;
+  };
+
   const okCount = results.filter((r) => r.ok).length;
-  if (okCount > 0) {
+  const transferAttempts = results.filter((r) => !r.skipped).length;
+  const allSkippedNoWallet = transferAttempts === 0 && results.length > 0;
+
+  // Advance period if anyone was paid, or if nobody had a wallet to pay
+  if (okCount > 0 || allSkippedNoWallet) {
     await updateGroupRewards(chatId, {
       last_payout_at: now,
       period_started_at: now
     });
-    const lines = results.map((r, idx) => {
-      const label = getUsernameLabel({
-        id: r.w.user_id,
-        username: r.w.username,
-        first_name: r.w.first_name
-      });
-      if (r.ok) return `${idx + 1}. ${label} — ${r.amount} tokens`;
-      return `${idx + 1}. ${label} — failed (${escHtml(r.error)})`;
-    });
+    const lines = results.map(formatResultLine);
     try {
       await bot.sendMessage(
         chatId,
-        addFooter(`<b>Reward payout</b>\n${lines.join('\n')}`),
+        addFooter(`<b>${force ? 'Manual reward payout' : 'Reward payout'}</b>\n${lines.join('\n')}`),
         { parse_mode: 'HTML', disable_web_page_preview: true }
       );
     } catch {}
-    return { paid: true };
+    return { paid: okCount > 0, due: true };
   }
 
-  // All transfers failed — tell the group (do not advance the period)
+  const lines = results.map(formatResultLine);
+  await maybeNotifyPayoutBlocked(
+    bot,
+    chatId,
+    addFooter,
+    `<b>Reward payout failed</b>\n${lines.join('\n')}\nPeriod not restarted — will retry.`
+  );
+  return { paid: false, due: true, allFailed: true };
+}
+
+async function maybeNotifyPayoutBlocked(bot, chatId, addFooter, htmlBody) {
+  const key = Number(chatId);
+  const last = lastPayoutFailNotifyAt.get(key) || 0;
+  if (Date.now() - last < 15 * 60 * 1000) return;
+  lastPayoutFailNotifyAt.set(key, Date.now());
   try {
-    const lines = results.map((r, idx) => {
-      const label = getUsernameLabel({
-        id: r.w.user_id,
-        username: r.w.username,
-        first_name: r.w.first_name
-      });
-      return `${idx + 1}. ${label} — failed (${escHtml(r.error)})`;
+    await bot.sendMessage(chatId, addFooter(htmlBody), {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true
     });
-    await bot.sendMessage(
-      chatId,
-      addFooter(`<b>Reward payout failed</b>\n${lines.join('\n')}\nPeriod not restarted — will retry.`),
-      { parse_mode: 'HTML', disable_web_page_preview: true }
-    );
-  } catch {}
-  return { paid: false, allFailed: true };
+  } catch (e) {
+    console.error('payout blocked notify failed', chatId, e?.message || e);
+  }
 }
 
 async function maybeLowBalanceAlert(bot, group, addFooter) {

@@ -106,6 +106,9 @@ export async function initSchema() {
       );
     `);
     await client.query(`
+      update pf_group_rewards set period_hours = 1 where period_hours is not null and period_hours < 1
+    `);
+    await client.query(`
       create table if not exists pf_user_wallets (
         user_id bigint primary key,
         solana_address text not null,
@@ -589,6 +592,8 @@ export async function updateGroupRewards(chatId, fields) {
 }
 
 export async function listGroupsDueForRewards() {
+  // All configured groups (caller decides if period elapsed). Keep period math in JS
+  // so short timers like 0.01h are handled the same as the UI.
   const res = await pool.query(
     `select * from pf_group_rewards
      where wallet_pubkey is not null
@@ -597,7 +602,8 @@ export async function listGroupsDueForRewards() {
        and reward_amount is not null
        and reward_amount > 0
        and winner_count >= 1
-       and period_started_at is not null`
+       and period_started_at is not null
+       and period_hours > 0`
   );
   return res.rows.map(mapGroupRewards);
 }
@@ -661,11 +667,13 @@ export async function getRewardBlacklistPage(chatId, page = 0, pageSize = 5) {
 
 export async function getEligibleRewardWinners(chatId, limit) {
   const lim = Math.max(1, Math.min(Number(limit) || 1, 50));
+  // Top players by horns, excluding blacklist. Wallet is optional —
+  // placements without /setwallet still get a share reserved (not sent).
   const res = await pool.query(
     `
     select u.user_id, u.username, u.first_name, u.length_cm, u.wins, w.solana_address
     from pf_users u
-    inner join pf_user_wallets w
+    left join pf_user_wallets w
       on w.user_id = u.user_id
     where u.chat_id = $1
       and not exists (

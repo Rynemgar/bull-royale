@@ -10,7 +10,7 @@ import {
 import {
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
-  createTransferInstruction,
+  createTransferCheckedInstruction,
   getMint,
   getAccount,
   getTokenMetadata,
@@ -349,11 +349,13 @@ export async function sendSplReward({ fromKeypair, toAddress, mint, amountUi }) 
     );
   }
   tx.add(
-    createTransferInstruction(
+    createTransferCheckedInstruction(
       fromAta,
+      mintPk,
       toAta,
       fromKeypair.publicKey,
       rawAmount,
+      mintInfo.decimals,
       [],
       programId
     )

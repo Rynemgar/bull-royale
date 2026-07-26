@@ -598,7 +598,7 @@ bot.onText(commandRegex('setbull'), async (msg) => {
         try { await bot.deleteMessage(chatId, prev.messageId); } catch {}
       }
     }
-    const menu = await buildSetbullMenu(chatId);
+    const menu = await buildSetbullMenu(chatId, msg.from.id);
     const sent = await bot.sendMessage(chatId, addFooter(menu.text), {
       parse_mode: 'HTML',
       disable_web_page_preview: true,
@@ -837,7 +837,7 @@ bot.on('callback_query', async (query) => {
       return;
     }
     try {
-      await handleSetbullCallback(bot, query, addFooter);
+      await handleSetbullCallback(bot, query, addFooter, getUsernameLabel);
     } catch (err) {
       console.error('setbull callback error', err);
       if (query.id) {

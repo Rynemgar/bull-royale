@@ -29,12 +29,15 @@ import {
 } from './db.js';
 import {
   buildSetbullMenu,
+  rememberSetbullMenu,
   handleSetbullCallback,
   handleSetbullPendingInput,
   handleSetwalletPending,
   startSetwalletFlow,
   handleNobull,
   pendingSetwallet,
+  pendingSetbull,
+  setbullMenuMessages,
   runRewardTick
 } from './rewards.js';
 
@@ -583,12 +586,25 @@ bot.onText(commandRegex('setbull'), async (msg) => {
   if (!isAdminUser(msg.from.id)) return;
   const chatId = msg.chat.id;
   try {
+    // Replace any prior session so only this admin owns the new menu
+    const prev = setbullMenuMessages.get(Number(chatId));
+    if (prev?.ownerId != null) {
+      const pending = pendingSetbull.get(prev.ownerId);
+      if (pending?.chatId === chatId) {
+        try { await bot.deleteMessage(chatId, pending.replyToMessageId); } catch {}
+        pendingSetbull.delete(prev.ownerId);
+      }
+      if (prev.messageId) {
+        try { await bot.deleteMessage(chatId, prev.messageId); } catch {}
+      }
+    }
     const menu = await buildSetbullMenu(chatId);
-    await bot.sendMessage(chatId, addFooter(menu.text), {
+    const sent = await bot.sendMessage(chatId, addFooter(menu.text), {
       parse_mode: 'HTML',
       disable_web_page_preview: true,
       reply_markup: menu.reply_markup
     });
+    rememberSetbullMenu(chatId, sent.message_id, msg.from.id);
   } catch (err) {
     console.error('setbull error', err);
     await sendWithFooter(chatId, 'Could not open rewards settings.');

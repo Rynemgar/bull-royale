@@ -107,13 +107,37 @@ export async function initSchema() {
     `);
     await client.query(`
       create table if not exists pf_user_wallets (
-        chat_id bigint not null,
-        user_id bigint not null,
+        user_id bigint primary key,
         solana_address text not null,
-        updated_at timestamptz not null default now(),
-        primary key (chat_id, user_id)
+        updated_at timestamptz not null default now()
       );
     `);
+    // Migrate legacy per-group wallets → one global address per user (keep newest)
+    await client.query(`
+      do $$
+      begin
+        if exists (
+          select 1 from information_schema.columns
+          where table_name = 'pf_user_wallets' and column_name = 'chat_id'
+        ) then
+          create temporary table pf_user_wallets_mig as
+          select distinct on (user_id) user_id, solana_address, updated_at
+          from pf_user_wallets
+          order by user_id, updated_at desc nulls last;
+          drop table pf_user_wallets;
+          create table pf_user_wallets (
+            user_id bigint primary key,
+            solana_address text not null,
+            updated_at timestamptz not null default now()
+          );
+          insert into pf_user_wallets (user_id, solana_address, updated_at)
+          select user_id, solana_address, coalesce(updated_at, now()) from pf_user_wallets_mig;
+          drop table pf_user_wallets_mig;
+        end if;
+      end $$;
+    `).catch((e) => {
+      console.error('pf_user_wallets migrate', e?.message || e);
+    });
     await client.query(`
       create table if not exists pf_reward_blacklist (
         chat_id bigint not null,
@@ -578,22 +602,22 @@ export async function listGroupsDueForRewards() {
   return res.rows.map(mapGroupRewards);
 }
 
-export async function setUserWallet(chatId, userId, solanaAddress) {
+export async function setUserWallet(userId, solanaAddress) {
   const res = await pool.query(
-    `insert into pf_user_wallets (chat_id, user_id, solana_address, updated_at)
-     values ($1, $2, $3, now())
-     on conflict (chat_id, user_id) do update
+    `insert into pf_user_wallets (user_id, solana_address, updated_at)
+     values ($1, $2, now())
+     on conflict (user_id) do update
        set solana_address = excluded.solana_address, updated_at = now()
      returning *`,
-    [chatId, userId, solanaAddress]
+    [userId, solanaAddress]
   );
   return res.rows[0];
 }
 
-export async function getUserWallet(chatId, userId) {
+export async function getUserWallet(userId) {
   const res = await pool.query(
-    `select * from pf_user_wallets where chat_id = $1 and user_id = $2`,
-    [chatId, userId]
+    `select * from pf_user_wallets where user_id = $1`,
+    [userId]
   );
   return res.rows[0] || null;
 }
@@ -642,7 +666,7 @@ export async function getEligibleRewardWinners(chatId, limit) {
     select u.user_id, u.username, u.first_name, u.length_cm, u.wins, w.solana_address
     from pf_users u
     inner join pf_user_wallets w
-      on w.chat_id = u.chat_id and w.user_id = u.user_id
+      on w.user_id = u.user_id
     where u.chat_id = $1
       and not exists (
         select 1 from pf_reward_blacklist b

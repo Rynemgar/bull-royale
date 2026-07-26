@@ -28,8 +28,10 @@ import {
   cascadingShares
 } from './solana.js';
 
-export const pendingSetbull = new Map(); // userId -> { chatId, field, replyToMessageId }
-export const pendingSetwallet = new Map(); // userId -> { chatId }
+export const pendingSetbull = new Map(); // userId -> { chatId, field, replyToMessageId, menuMessageId }
+export const pendingSetwallet = new Map(); // userId -> { notifyChatId? }
+/** chatId -> { messageId, ownerId } for the active /setbull session */
+export const setbullMenuMessages = new Map();
 
 const BLACKLIST_PAGE_SIZE = 5;
 
@@ -38,6 +40,44 @@ function escHtml(s) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+export function rememberSetbullMenu(chatId, messageId, ownerId = null) {
+  if (chatId == null || messageId == null) return;
+  const key = Number(chatId);
+  const prev = setbullMenuMessages.get(key);
+  setbullMenuMessages.set(key, {
+    messageId: Number(messageId),
+    ownerId: ownerId != null ? Number(ownerId) : (prev?.ownerId ?? null)
+  });
+}
+
+function getSetbullSession(chatId) {
+  return setbullMenuMessages.get(Number(chatId)) || null;
+}
+
+async function refreshSetbullMenu(bot, chatId, addFooter, messageId = null) {
+  const session = getSetbullSession(chatId);
+  const menuId = messageId || session?.messageId;
+  if (!menuId) return false;
+  const menu = await buildSetbullMenu(chatId);
+  try {
+    await bot.editMessageText(addFooter(menu.text), {
+      chat_id: chatId,
+      message_id: menuId,
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: menu.reply_markup
+    });
+    rememberSetbullMenu(chatId, menuId, session?.ownerId);
+    return true;
+  } catch (e) {
+    // ignore "message is not modified"
+    if (!/message is not modified/i.test(e?.message || '')) {
+      console.error('refresh setbull menu', e?.message || e);
+    }
+    return false;
+  }
 }
 
 export async function buildSetbullMenu(chatId) {
@@ -97,6 +137,7 @@ export async function buildSetbullMenu(chatId) {
   keyboard.push([{ text: 'Set number of winners', callback_data: 'sb:setwinners' }]);
   keyboard.push([{ text: 'Set timer', callback_data: 'sb:settimer' }]);
   keyboard.push([{ text: 'Blacklist', callback_data: 'sb:bl:0' }]);
+  keyboard.push([{ text: 'Close', callback_data: 'sb:close' }]);
 
   return {
     text: lines.join('\n'),
@@ -136,15 +177,23 @@ export async function buildBlacklistKeyboard(chatId, page = 0) {
   return { text: lines.join('\n'), reply_markup: { inline_keyboard: keyboard }, page: safePage };
 }
 
-async function promptSetbullField(bot, chatId, userId, field, prompt) {
-  const sent = await bot.sendMessage(chatId, prompt, {
+async function promptSetbullField(bot, chatId, user, field, prompt, menuMessageId) {
+  const userId = user.id;
+  const session = getSetbullSession(chatId);
+  // Mention the owner so force_reply selective only targets them
+  const who = user.username
+    ? `@${escHtml(user.username)}`
+    : `<a href="tg://user?id=${userId}">${escHtml(user.first_name || 'admin')}</a>`;
+  const sent = await bot.sendMessage(chatId, `${who} ${prompt}`, {
     parse_mode: 'HTML',
     reply_markup: { force_reply: true, selective: true }
   });
   pendingSetbull.set(userId, {
     chatId,
     field,
-    replyToMessageId: sent.message_id
+    replyToMessageId: sent.message_id,
+    menuMessageId: menuMessageId || session?.messageId || null,
+    ownerId: userId
   });
 }
 
@@ -153,6 +202,41 @@ export async function handleSetbullCallback(bot, query, addFooter) {
   const msg = query.message;
   const chatId = msg.chat.id;
   const fromId = query.from.id;
+
+  const session = getSetbullSession(chatId);
+  if (!session || session.ownerId !== fromId || session.messageId !== msg.message_id) {
+    if (query.id) {
+      await bot.answerCallbackQuery(query.id, {
+        text: 'Only the admin who opened this menu can use it.',
+        show_alert: true
+      });
+    }
+    return true;
+  }
+
+  if (data === 'sb:close') {
+    if (query.id) await bot.answerCallbackQuery(query.id);
+    // Drop any in-flight input for this owner
+    const pending = pendingSetbull.get(fromId);
+    if (pending?.chatId === chatId) {
+      try { await bot.deleteMessage(chatId, pending.replyToMessageId); } catch {}
+      pendingSetbull.delete(fromId);
+    }
+    try {
+      await bot.deleteMessage(chatId, msg.message_id);
+    } catch (e) {
+      try {
+        await bot.editMessageText(addFooter('Rewards settings closed.'), {
+          chat_id: chatId,
+          message_id: msg.message_id,
+          parse_mode: 'HTML',
+          disable_web_page_preview: true
+        });
+      } catch {}
+    }
+    setbullMenuMessages.delete(Number(chatId));
+    return true;
+  }
 
   if (data === 'sb:menu' || data === 'sb:genwallet') {
     if (data === 'sb:genwallet') {
@@ -182,18 +266,7 @@ export async function handleSetbullCallback(bot, query, addFooter) {
     } else if (query.id) {
       await bot.answerCallbackQuery(query.id);
     }
-    const menu = await buildSetbullMenu(chatId);
-    try {
-      await bot.editMessageText(addFooter(menu.text), {
-        chat_id: chatId,
-        message_id: msg.message_id,
-        parse_mode: 'HTML',
-        disable_web_page_preview: true,
-        reply_markup: menu.reply_markup
-      });
-    } catch (e) {
-      console.error('edit setbull menu', e?.message || e);
-    }
+    await refreshSetbullMenu(bot, chatId, addFooter, msg.message_id);
     return true;
   }
 
@@ -202,9 +275,10 @@ export async function handleSetbullCallback(bot, query, addFooter) {
     await promptSetbullField(
       bot,
       chatId,
-      fromId,
+      query.from,
       'token',
-      'Reply with the Solana token mint address (CA) for rewards.'
+      'Reply with the Solana token mint address (CA) for rewards.',
+      msg.message_id
     );
     return true;
   }
@@ -213,9 +287,10 @@ export async function handleSetbullCallback(bot, query, addFooter) {
     await promptSetbullField(
       bot,
       chatId,
-      fromId,
+      query.from,
       'amount',
-      'Reply with the total reward token amount to split each period (e.g. 1000).'
+      'Reply with the total reward token amount to split each period (e.g. 1000).',
+      msg.message_id
     );
     return true;
   }
@@ -224,9 +299,10 @@ export async function handleSetbullCallback(bot, query, addFooter) {
     await promptSetbullField(
       bot,
       chatId,
-      fromId,
+      query.from,
       'winners',
-      'Reply with the number of winners (integer ≥ 1).'
+      'Reply with the number of winners (integer ≥ 1).',
+      msg.message_id
     );
     return true;
   }
@@ -235,9 +311,10 @@ export async function handleSetbullCallback(bot, query, addFooter) {
     await promptSetbullField(
       bot,
       chatId,
-      fromId,
+      query.from,
       'timer',
-      'Reply with the reward period in hours (default 72).'
+      'Reply with the reward period in hours (default 72).',
+      msg.message_id
     );
     return true;
   }
@@ -254,6 +331,7 @@ export async function handleSetbullCallback(bot, query, addFooter) {
         disable_web_page_preview: true,
         reply_markup: bl.reply_markup
       });
+      rememberSetbullMenu(chatId, msg.message_id, fromId);
     } catch (e) {
       console.error('edit blacklist', e?.message || e);
     }
@@ -275,6 +353,7 @@ export async function handleSetbullCallback(bot, query, addFooter) {
         disable_web_page_preview: true,
         reply_markup: bl.reply_markup
       });
+      rememberSetbullMenu(chatId, msg.message_id, fromId);
     } catch (e) {
       console.error('edit blacklist after remove', e?.message || e);
     }
@@ -289,81 +368,85 @@ export async function handleSetbullPendingInput(bot, msg, addFooter) {
   const state = pendingSetbull.get(msg.from.id);
   if (!state) return false;
   if (msg.chat.id !== state.chatId) return false;
-  if (!msg.reply_to_message || msg.reply_to_message.message_id !== state.replyToMessageId) return false;
+  // Only the admin who started this input, and only as a reply to the prompt
+  if (state.ownerId != null && msg.from.id !== state.ownerId) return false;
+  if (!msg.reply_to_message || msg.reply_to_message.message_id !== state.replyToMessageId) {
+    // Ignore unrelated messages from this user while a prompt is open
+    return false;
+  }
+
+  const session = getSetbullSession(state.chatId);
+  if (session && session.ownerId != null && session.ownerId !== msg.from.id) {
+    return false;
+  }
 
   const text = msg.text.trim();
   const chatId = state.chatId;
+  let ok = false;
+  let errText = null;
+
   try {
     if (state.field === 'token') {
       if (!validateSolanaAddress(text)) {
-        await bot.sendMessage(chatId, addFooter('Invalid Solana mint address. Try again via /setbull.'), {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        });
+        errText = 'Invalid Solana mint address. Try again via the menu.';
       } else {
         await updateGroupRewards(chatId, { reward_mint: text });
         await maybeStartRewardPeriod(chatId);
-        await bot.sendMessage(chatId, addFooter(`Reward token set to <code>${escHtml(text)}</code>.`), {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        });
+        ok = true;
       }
     } else if (state.field === 'amount') {
       const amount = Number(text);
       if (!Number.isFinite(amount) || amount <= 0) {
-        await bot.sendMessage(chatId, addFooter('Amount must be a positive number.'), {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        });
+        errText = 'Amount must be a positive number.';
       } else {
         await updateGroupRewards(chatId, { reward_amount: amount });
         await maybeStartRewardPeriod(chatId);
-        await bot.sendMessage(chatId, addFooter(`Reward amount set to ${amount}.`), {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        });
+        ok = true;
       }
     } else if (state.field === 'winners') {
       const n = parseInt(text, 10);
       if (!Number.isFinite(n) || n < 1 || n > 50) {
-        await bot.sendMessage(chatId, addFooter('Winners must be an integer from 1 to 50.'), {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        });
+        errText = 'Winners must be an integer from 1 to 50.';
       } else {
         await updateGroupRewards(chatId, { winner_count: n });
         await maybeStartRewardPeriod(chatId);
-        await bot.sendMessage(chatId, addFooter(`Number of winners set to ${n}.`), {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        });
+        ok = true;
       }
     } else if (state.field === 'timer') {
       const hours = Number(text);
       if (!Number.isFinite(hours) || hours <= 0 || hours > 8760) {
-        await bot.sendMessage(chatId, addFooter('Timer must be a positive number of hours.'), {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        });
+        errText = 'Timer must be a positive number of hours.';
       } else {
         await updateGroupRewards(chatId, {
           period_hours: hours,
           period_started_at: new Date()
         });
-        await bot.sendMessage(chatId, addFooter(`Timer set to ${hours}h (period restarted).`), {
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        });
+        ok = true;
       }
     }
   } catch (e) {
     console.error('setbull pending input error', e);
-    await bot.sendMessage(chatId, addFooter('Failed to save setting.'), {
+    errText = 'Failed to save setting.';
+  }
+
+  pendingSetbull.delete(msg.from.id);
+
+  // Clean up the force-reply prompt and the user's reply
+  try { await bot.deleteMessage(chatId, state.replyToMessageId); } catch {}
+  try { await bot.deleteMessage(chatId, msg.message_id); } catch {}
+
+  if (ok) {
+    await refreshSetbullMenu(bot, chatId, addFooter, state.menuMessageId);
+  } else if (errText) {
+    const notice = await bot.sendMessage(chatId, addFooter(errText), {
       parse_mode: 'HTML',
       disable_web_page_preview: true
     });
+    await refreshSetbullMenu(bot, chatId, addFooter, state.menuMessageId);
+    setTimeout(() => {
+      bot.deleteMessage(chatId, notice.message_id).catch(() => {});
+    }, 8000);
   }
-  pendingSetbull.delete(msg.from.id);
   return true;
 }
 
@@ -381,20 +464,22 @@ export async function handleSetwalletPending(bot, msg, addFooter, getUsernameLab
     });
     return true;
   }
-  await setUserWallet(state.chatId, msg.from.id, address);
+  await setUserWallet(msg.from.id, address);
   pendingSetwallet.delete(msg.from.id);
   await bot.sendMessage(
     msg.chat.id,
-    addFooter(`Saved wallet <code>${escHtml(address)}</code> for rewards in that group.`),
+    addFooter(`Saved wallet <code>${escHtml(address)}</code> for Bull Royale rewards across all groups.`),
     { parse_mode: 'HTML', disable_web_page_preview: true }
   );
-  try {
-    await bot.sendMessage(
-      state.chatId,
-      addFooter(`${getUsernameLabel(msg.from)} registered a Solana wallet for rewards.`),
-      { parse_mode: 'HTML', disable_web_page_preview: true }
-    );
-  } catch {}
+  if (state.notifyChatId) {
+    try {
+      await bot.sendMessage(
+        state.notifyChatId,
+        addFooter(`${getUsernameLabel(msg.from)} registered a Solana wallet for rewards.`),
+        { parse_mode: 'HTML', disable_web_page_preview: true }
+      );
+    } catch {}
+  }
   return true;
 }
 
@@ -403,17 +488,28 @@ export async function startSetwalletFlow(bot, msg, addFooter) {
   const user = msg.from;
   if (!chat || !user) return;
 
+  const existing = await getUserWallet(user.id);
+  const existingNote = existing?.solana_address
+    ? `\n\nCurrent wallet: <code>${escHtml(existing.solana_address)}</code>\nSend a new address to replace it.`
+    : '';
+
+  // Private chat: register directly here
   if (chat.type === 'private') {
+    pendingSetwallet.set(user.id, { notifyChatId: null });
     await bot.sendMessage(
       chat.id,
-      addFooter('Run /setwallet inside the Bull Royale group you want to register for, then I will DM you for your address.'),
+      addFooter(
+        `Send me your Solana wallet address to receive Bull Royale rewards in all groups.${existingNote}\n` +
+        `Reply with the address only (or /cancel).`
+      ),
       { parse_mode: 'HTML', disable_web_page_preview: true }
     );
     return;
   }
 
+  // Group: nudge + DM
   const chatId = chat.id;
-  pendingSetwallet.set(user.id, { chatId });
+  pendingSetwallet.set(user.id, { notifyChatId: chatId });
   await bot.sendMessage(chatId, addFooter(`${getUsernameLabelSafe(user)}: check your DMs to register your Solana wallet.`), {
     parse_mode: 'HTML',
     disable_web_page_preview: true
@@ -423,7 +519,7 @@ export async function startSetwalletFlow(bot, msg, addFooter) {
     await bot.sendMessage(
       user.id,
       addFooter(
-        `Send me your Solana wallet address to receive Bull Royale rewards for <b>${escHtml(chat.title || 'this group')}</b>.\n` +
+        `Send me your Solana wallet address to receive Bull Royale rewards in <b>all groups</b>.${existingNote}\n` +
         `Reply in this chat with the address only.`
       ),
       { parse_mode: 'HTML', disable_web_page_preview: true }
@@ -432,7 +528,7 @@ export async function startSetwalletFlow(bot, msg, addFooter) {
     pendingSetwallet.delete(user.id);
     await bot.sendMessage(
       chatId,
-      addFooter('I could not DM you. Open a private chat with me, press Start, then run /setwallet in the group again.'),
+      addFooter('I could not DM you. Open a private chat with me, press Start, then run /setwallet there (or in the group again).'),
       { parse_mode: 'HTML', disable_web_page_preview: true }
     );
   }
@@ -551,6 +647,23 @@ async function processGroupPayout(bot, group, addFooter, getUsernameLabel) {
     } catch {}
     return { paid: true };
   }
+
+  // All transfers failed — tell the group (do not advance the period)
+  try {
+    const lines = results.map((r, idx) => {
+      const label = getUsernameLabel({
+        id: r.w.user_id,
+        username: r.w.username,
+        first_name: r.w.first_name
+      });
+      return `${idx + 1}. ${label} — failed (${escHtml(r.error)})`;
+    });
+    await bot.sendMessage(
+      chatId,
+      addFooter(`<b>Reward payout failed</b>\n${lines.join('\n')}\nPeriod not restarted — will retry.`),
+      { parse_mode: 'HTML', disable_web_page_preview: true }
+    );
+  } catch {}
   return { paid: false, allFailed: true };
 }
 

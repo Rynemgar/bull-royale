@@ -111,20 +111,42 @@ export async function getSolBalance(pubkeyStr) {
   return lamports / LAMPORTS_PER_SOL;
 }
 
+/** Resolve whether a mint is classic SPL or Token-2022. */
+export async function resolveTokenProgramId(mintPk) {
+  const conn = getConnection();
+  const info = await conn.getAccountInfo(mintPk instanceof PublicKey ? mintPk : new PublicKey(mintPk));
+  if (!info) throw new Error('Mint account not found');
+  if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) return TOKEN_2022_PROGRAM_ID;
+  if (info.owner.equals(TOKEN_PROGRAM_ID)) return TOKEN_PROGRAM_ID;
+  throw new Error(`Account is not an SPL mint (owner ${info.owner.toBase58()})`);
+}
+
 export async function getTokenBalance(ownerPubkey, mintStr) {
   const conn = getConnection();
   const owner = new PublicKey(ownerPubkey);
   const mint = new PublicKey(mintStr);
-  const ata = await getAssociatedTokenAddress(mint, owner, false, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID);
+  let programId;
   try {
-    const acct = await getAccount(conn, ata);
-    const mintInfo = await getMint(conn, mint);
+    programId = await resolveTokenProgramId(mint);
+  } catch {
+    return { ui: 0, raw: 0n, decimals: 0 };
+  }
+  const ata = await getAssociatedTokenAddress(
+    mint,
+    owner,
+    false,
+    programId,
+    ASSOCIATED_TOKEN_PROGRAM_ID
+  );
+  try {
+    const acct = await getAccount(conn, ata, 'confirmed', programId);
+    const mintInfo = await getMint(conn, mint, 'confirmed', programId);
     const raw = Number(acct.amount);
     const ui = raw / 10 ** mintInfo.decimals;
-    return { ui, raw: acct.amount, decimals: mintInfo.decimals };
+    return { ui, raw: acct.amount, decimals: mintInfo.decimals, programId: programId.toBase58() };
   } catch {
-    const mintInfo = await getMint(conn, mint).catch(() => null);
-    return { ui: 0, raw: 0n, decimals: mintInfo?.decimals ?? 0 };
+    const mintInfo = await getMint(conn, mint, 'confirmed', programId).catch(() => null);
+    return { ui: 0, raw: 0n, decimals: mintInfo?.decimals ?? 0, programId: programId.toBase58() };
   }
 }
 
@@ -286,13 +308,14 @@ export async function getTokenMetadataName(mintStr) {
 
 /**
  * Transfer `amountUi` tokens (human units) from treasury to recipient.
- * Creates ATA if needed.
+ * Supports classic SPL and Token-2022. Creates ATA if needed.
  */
 export async function sendSplReward({ fromKeypair, toAddress, mint, amountUi }) {
   const conn = getConnection();
   const mintPk = new PublicKey(mint);
   const toPk = new PublicKey(toAddress);
-  const mintInfo = await getMint(conn, mintPk);
+  const programId = await resolveTokenProgramId(mintPk);
+  const mintInfo = await getMint(conn, mintPk, 'confirmed', programId);
   const rawAmount = BigInt(Math.round(Number(amountUi) * 10 ** mintInfo.decimals));
   if (rawAmount <= 0n) throw new Error('Transfer amount must be positive');
 
@@ -300,14 +323,14 @@ export async function sendSplReward({ fromKeypair, toAddress, mint, amountUi }) 
     mintPk,
     fromKeypair.publicKey,
     false,
-    TOKEN_PROGRAM_ID,
+    programId,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
   const toAta = await getAssociatedTokenAddress(
     mintPk,
     toPk,
     false,
-    TOKEN_PROGRAM_ID,
+    programId,
     ASSOCIATED_TOKEN_PROGRAM_ID
   );
 
@@ -320,7 +343,7 @@ export async function sendSplReward({ fromKeypair, toAddress, mint, amountUi }) 
         toAta,
         toPk,
         mintPk,
-        TOKEN_PROGRAM_ID,
+        programId,
         ASSOCIATED_TOKEN_PROGRAM_ID
       )
     );
@@ -332,7 +355,7 @@ export async function sendSplReward({ fromKeypair, toAddress, mint, amountUi }) 
       fromKeypair.publicKey,
       rawAmount,
       [],
-      TOKEN_PROGRAM_ID
+      programId
     )
   );
 

@@ -128,30 +128,60 @@ function isLocalMediaPath(ref) {
   const raw = unwrapMediaRef(ref);
   return typeof raw === 'string' &&
     (raw.includes(path.sep) || raw.includes('/')) &&
+    !/^https?:\/\//i.test(raw) &&
     fs.existsSync(raw);
 }
 
-/** After uploading a local asset once, persist Telegram file_id for reuse. */
+function isRemoteMediaUrl(ref) {
+  if (!ref || typeof ref !== 'string') return false;
+  const raw = unwrapMediaRef(ref);
+  return typeof raw === 'string' && /^https?:\/\//i.test(raw);
+}
+
+/** Local files and http(s) URLs should be uploaded once, then stored as file_id. */
+function shouldCacheMediaFileId(ref) {
+  return isLocalMediaPath(ref) || isRemoteMediaUrl(ref);
+}
+
+function fileIdRefFromSentMessage(sentMsg) {
+  if (sentMsg?.video?.file_id) return `video:${sentMsg.video.file_id}`;
+  if (sentMsg?.animation?.file_id) return `animation:${sentMsg.animation.file_id}`;
+  if (Array.isArray(sentMsg?.photo) && sentMsg.photo.length > 0) {
+    const best = sentMsg.photo.reduce((a, b) => ((a.file_size || 0) > (b.file_size || 0) ? a : b));
+    return best.file_id;
+  }
+  if (sentMsg?.document?.file_id) {
+    const mime = String(sentMsg.document.mime_type || '');
+    if (mime.startsWith('video/') || isVideoMedia(sentMsg.document.file_name || '')) {
+      return `video:${sentMsg.document.file_id}`;
+    }
+    if (mime.startsWith('image/')) return sentMsg.document.file_id;
+  }
+  return null;
+}
+
+/** After uploading a local/remote asset once, persist Telegram file_id for reuse. */
 async function cacheSentMediaFileId(key, sentMsg) {
   const current = getImageUrl(key);
-  if (!isLocalMediaPath(current)) return;
+  if (!shouldCacheMediaFileId(current)) return;
 
-  let stored = null;
-  if (sentMsg?.video?.file_id) {
-    stored = `video:${sentMsg.video.file_id}`;
-  } else if (sentMsg?.animation?.file_id) {
-    stored = `animation:${sentMsg.animation.file_id}`;
-  } else if (Array.isArray(sentMsg?.photo) && sentMsg.photo.length > 0) {
-    const best = sentMsg.photo.reduce((a, b) => ((a.file_size || 0) > (b.file_size || 0) ? a : b));
-    stored = best.file_id;
-  }
+  const stored = fileIdRefFromSentMessage(sentMsg);
   if (!stored) return;
 
-  const localPath = unwrapMediaRef(current);
+  const source = unwrapMediaRef(current);
   const keysToUpdate = new Set([key]);
   for (const [k, v] of Object.entries(imagesCache)) {
-    if (isLocalMediaPath(v) && unwrapMediaRef(v) === localPath) keysToUpdate.add(k);
+    if (!v) continue;
+    if (shouldCacheMediaFileId(v) && unwrapMediaRef(v) === source) {
+      keysToUpdate.add(k);
+    }
   }
+  // snap / shrunk share the same default asset
+  if (key === 'snap' || key === 'shrunk') {
+    keysToUpdate.add('snap');
+    keysToUpdate.add('shrunk');
+  }
+
   for (const k of keysToUpdate) {
     imagesCache[k] = stored;
     try {
@@ -172,7 +202,7 @@ async function sendKeyedMedia(chatId, key, options = {}) {
       reply_markup: rest.reply_markup
     });
   }
-  const uploadingLocal = isLocalMediaPath(getImageUrl(key));
+  const needsUpload = shouldCacheMediaFileId(getImageUrl(key));
   let msg;
   if (resolved.type === 'video') {
     msg = await bot.sendVideo(chatId, resolved.media, options);
@@ -181,10 +211,13 @@ async function sendKeyedMedia(chatId, key, options = {}) {
   } else {
     msg = await bot.sendPhoto(chatId, resolved.media, options);
   }
-  if (uploadingLocal && msg) {
-    cacheSentMediaFileId(key, msg).catch((e) => {
+  if (needsUpload && msg) {
+    // Await so the next command in this group reuses file_id instead of re-uploading
+    try {
+      await cacheSentMediaFileId(key, msg);
+    } catch (e) {
       console.error('cacheSentMediaFileId error', e?.message || e);
-    });
+    }
   }
   return msg;
 }
@@ -302,21 +335,24 @@ function isBotTagged(msg) {
 }
 
 const HELP_TEXT =
-  `Bull Royale is a competitive Telegram game where players grow their horns, challenge rivals and compete to become the top bull on the leaderboard. Progress comes from consistent activity, successful duels and strategic play. The objective is simple: build the strongest bull and become the Alpha Bull.\n\n` +
+  `<b>Bull Royale</b>\n` +
+  `Bull Royale is a competitive Telegram game where players grow their horns, challenge rivals and compete to become the top bull on the leaderboard. Progress comes from consistent activity, successful duels and strategic play. The objective is simple. Build the strongest bull and become the Alpha Bull.\n\n` +
   `<b>Rules</b>\n` +
   `• Every player begins with a bull and an initial horn length.\n` +
   `• Horn growth is earned through game commands, regular activity and winning duels.\n` +
-  `• If you lose a duel, you may lose horn length to your opponent.\n` +
-  `• Players over 100cm can be snapped, giving newer players the ability to catch up.\n` +
+  `• If you lose a duel, you lose horn length to your opponent.\n` +
+  `• Players over 100cm can be snapped, giving newer players the chance to catch up.\n` +
   `• Duel commands let you challenge another player for a chosen amount of horn length.\n` +
   `• Each round lasts 72 hours.\n` +
-  `• Prizes are awarded to the top 3 bulls at the end of each round.\n` +
-  `• The leaderboard tracks player performance and updates as bulls grow and battle.\n` +
-  `• The goal is to grow the largest horns and rank above other players\n\n` +
+  `• Prizes are awarded to the top 3 bulls at the end of every round.\n` +
+  `• The leaderboard updates as bulls grow and battle.\n` +
+  `• The goal is to grow the biggest horns and become the Alpha Bull.\n\n` +
   `<b>Commands</b>\n` +
-  `• /grow — Increase your horn length once every 8 hours. Use this command regularly to maintain steady progress.\n\n` +
-  `• /attack — Challenge another player to a duel. Winning the fight allows you to take their horns; losing may cost you yours.\n\n` +
-  `• /attack [amount] — Duel another player for a chosen amount of horn length. The amount can vary depending on the challenge.`;
+  `• /grow — Increase your horn length once every 8 hours. Use this regularly to keep growing.\n\n` +
+  `• /attack — Challenge another player to a duel. Win to steal your opponent's horn length. Lose and they take yours.\n\n` +
+  `• /attack [amount] — Duel another player for a chosen amount of horn length.\n` +
+  `Example: /attack 30\n\n` +
+  `• /setwallet — Opens a private DM where you can add your Solana wallet address to become eligible for $HBULL rewards.`;
 
 async function reloadImagesCache() {
   const rows = await getAllImages();
@@ -797,6 +833,14 @@ bot.on('message', async (msg) => {
         } else if (Array.isArray(msg.photo) && msg.photo.length > 0) {
           const best = msg.photo.reduce((a, b) => ((a.file_size || 0) > (b.file_size || 0) ? a : b));
           newUrl = best.file_id;
+        } else if (msg.document && msg.document.file_id) {
+          const mime = String(msg.document.mime_type || '');
+          const name = msg.document.file_name || '';
+          if (mime.startsWith('video/') || isVideoMedia(name)) {
+            newUrl = `video:${msg.document.file_id}`;
+          } else if (mime.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(name)) {
+            newUrl = msg.document.file_id;
+          }
         } else if (typeof msg.text === 'string' && /^https?:\/\//i.test(msg.text.trim())) {
           const candidate = msg.text.trim();
           if (/^https?:\/\/api\.telegram\.org\//i.test(candidate)) {
@@ -834,18 +878,45 @@ bot.on('message', async (msg) => {
           return;
         }
         await setImageUrl(key, newUrl);
+        if (key === 'snap' || key === 'shrunk') {
+          await setImageUrl(key === 'snap' ? 'shrunk' : 'snap', newUrl);
+        }
         await reloadImagesCache();
+
+        // If they set an http(s) URL, upload once now and store Telegram file_id for fast reuse
+        if (isRemoteMediaUrl(newUrl)) {
+          try {
+            const warmChatId = msg.from.id; // DM the admin so the group isn't spammed
+            const warmMsg = await sendKeyedMedia(warmChatId, key, {
+              caption: addFooter(`Caching ${label} media for fast reuse…`),
+              parse_mode: 'HTML'
+            });
+            // sendKeyedMedia already caches file_id when URL is uploaded
+            if (warmMsg?.message_id) {
+              setTimeout(() => {
+                bot.deleteMessage(warmChatId, warmMsg.message_id).catch(() => {});
+              }, 3000);
+            }
+          } catch (e) {
+            console.error('warm media cache failed', key, e?.message || e);
+          }
+        }
+
         try { await bot.deleteMessage(msg.chat.id, msg.message_id); } catch {}
-        const kind = isVideoMedia(newUrl) ? 'video' : 'image';
+        const kind = isVideoMedia(getImageUrl(key) || newUrl) ? 'video' : 'image';
+        const after = getImageUrl(key) || newUrl;
+        const cachedNote = shouldCacheMediaFileId(after)
+          ? ''
+          : ' Cached for fast reuse.';
         try {
-          await bot.editMessageText(addFooter(`✅ Updated ${label} ${kind}.`), {
+          await bot.editMessageText(addFooter(`✅ Updated ${label} ${kind}.${cachedNote}`), {
             chat_id: state.chatId,
             message_id: state.replyToMessageId,
             parse_mode: 'HTML',
             disable_web_page_preview: true
           });
         } catch {
-          await bot.sendMessage(msg.chat.id, addFooter(`✅ Updated ${label} ${kind}.`), {
+          await bot.sendMessage(msg.chat.id, addFooter(`✅ Updated ${label} ${kind}.${cachedNote}`), {
             parse_mode: 'HTML',
             disable_web_page_preview: true
           });

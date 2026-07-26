@@ -282,6 +282,42 @@ function commandRegex(command, argsPattern = '') {
   return new RegExp(`^/${command}${at}${argsPattern}`, 'i');
 }
 
+/** True in DMs always; in groups only if @BotUsername appears (e.g. /help@Bot). */
+function isBotTagged(msg) {
+  if (!msg?.chat || msg.chat.type === 'private') return true;
+  const uname = String(BOT_USERNAME || '').toLowerCase();
+  if (!uname) return false;
+  const text = msg.text || msg.caption || '';
+  const escaped = uname.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (new RegExp(`@${escaped}\\b`, 'i').test(text)) return true;
+  const entities = msg.entities || msg.caption_entities || [];
+  for (const e of entities) {
+    if (e.type === 'text_mention' && Number(e.user?.id) === Number(BOT_ID)) return true;
+    if (e.type === 'mention') {
+      const mention = text.slice(e.offset, e.offset + e.length).toLowerCase();
+      if (mention === `@${uname}`) return true;
+    }
+  }
+  return false;
+}
+
+const HELP_TEXT =
+  `Bull Royale is a competitive Telegram game where players grow their horns, challenge rivals and compete to become the top bull on the leaderboard. Progress comes from consistent activity, successful duels and strategic play. The objective is simple: build the strongest bull and become the Alpha Bull.\n\n` +
+  `<b>Rules</b>\n` +
+  `• Every player begins with a bull and an initial horn length.\n` +
+  `• Horn growth is earned through game commands, regular activity and winning duels.\n` +
+  `• If you lose a duel, you may lose horn length to your opponent.\n` +
+  `• Players over 100cm can be snapped, giving newer players the ability to catch up.\n` +
+  `• Duel commands let you challenge another player for a chosen amount of horn length.\n` +
+  `• Each round lasts 72 hours.\n` +
+  `• Prizes are awarded to the top 3 bulls at the end of each round.\n` +
+  `• The leaderboard tracks player performance and updates as bulls grow and battle.\n` +
+  `• The goal is to grow the largest horns and rank above other players\n\n` +
+  `<b>Commands</b>\n` +
+  `• /grow — Increase your horn length once every 8 hours. Use this command regularly to maintain steady progress.\n\n` +
+  `• /attack — Challenge another player to a duel. Winning the fight allows you to take their horns; losing may cost you yours.\n\n` +
+  `• /attack [amount] — Duel another player for a chosen amount of horn length. The amount can vary depending on the challenge.`;
+
 async function reloadImagesCache() {
   const rows = await getAllImages();
   const next = { ...DEFAULT_IMAGES };
@@ -381,6 +417,17 @@ async function performGrow(chatId, user) {
   });
   return { ok: true, snapped: false, updated };
 }
+
+// /help — groups only when bot is tagged (/help@BotName)
+bot.onText(commandRegex('help'), async (msg) => {
+  if (!msg.chat) return;
+  if (!isBotTagged(msg)) return;
+  try {
+    await sendWithFooter(msg.chat.id, HELP_TEXT);
+  } catch (err) {
+    console.error('help error', err);
+  }
+});
 
 // /grow
 bot.onText(commandRegex('grow'), async (msg) => {

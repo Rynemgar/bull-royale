@@ -43,7 +43,9 @@ import {
 } from './rewards.js';
 import {
   decryptSecret,
-  secretKeyToBase58
+  secretKeyToBase58,
+  cascadingShares,
+  getTokenMetadataName
 } from './solana.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -245,6 +247,41 @@ function formatCooldown(ms) {
   const hours = Math.floor(ms / 3600000);
   const minutes = Math.floor((ms % 3600000) / 60000);
   return `${hours}h ${minutes}m`;
+}
+
+function formatDuration(ms) {
+  const t = Math.max(0, Math.floor(Number(ms) || 0));
+  const hours = Math.floor(t / 3600000);
+  const minutes = Math.floor((t % 3600000) / 60000);
+  const seconds = Math.floor((t % 60000) / 1000);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function placeLabel(index) {
+  const n = index + 1;
+  const mod100 = n % 100;
+  const mod10 = n % 10;
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th Place`;
+  if (mod10 === 1) return `${n}st Place`;
+  if (mod10 === 2) return `${n}nd Place`;
+  if (mod10 === 3) return `${n}rd Place`;
+  return `${n}th Place`;
+}
+
+function formatPrizeAmount(n) {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return String(n);
+  if (Math.abs(x - Math.round(x)) < 1e-9) return String(Math.round(x));
+  return String(parseFloat(x.toFixed(6)));
+}
+
+const PRIZE_COOLDOWN_MS = 30 * 60 * 1000;
+const prizeCooldownAt = new Map(); // `${chatId}:${userId}` -> timestamp
+
+function prizeCooldownKey(chatId, userId) {
+  return `${chatId}:${userId}`;
 }
 
 /** Random grow delta with 2 decimal places. Mostly gains; occasional shrink. */
@@ -467,6 +504,75 @@ bot.onText(commandRegex('help'), async (msg) => {
     await sendWithFooter(msg.chat.id, HELP_TEXT);
   } catch (err) {
     console.error('help error', err);
+  }
+});
+
+// /prize — current round prize split + time remaining (30m cooldown per user)
+bot.onText(commandRegex('prize'), async (msg) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const cdKey = prizeCooldownKey(chatId, userId);
+  const lastAt = prizeCooldownAt.get(cdKey) || 0;
+  const elapsed = Date.now() - lastAt;
+  if (lastAt && elapsed < PRIZE_COOLDOWN_MS) {
+    const remaining = PRIZE_COOLDOWN_MS - elapsed;
+    // Personal popup via callback-style alert isn't available for slash commands;
+    // DM the user so the group isn't spammed. Fall back to a short group notice.
+    const coolText = `You're on cooldown for /prize. Try again in ${formatDuration(remaining)}.`;
+    try {
+      await bot.sendMessage(userId, coolText);
+    } catch {
+      const notice = await bot.sendMessage(chatId, coolText, {
+        reply_to_message_id: msg.message_id
+      });
+      setTimeout(() => {
+        bot.deleteMessage(chatId, notice.message_id).catch(() => {});
+      }, 8000);
+    }
+    return;
+  }
+
+  try {
+    const group = await getGroupRewards(chatId);
+    if (!group?.reward_mint || !(group.reward_amount > 0) || !(group.winner_count >= 1)) {
+      prizeCooldownAt.set(cdKey, Date.now());
+      await sendWithFooter(
+        chatId,
+        'Prizes are not configured for this group yet. An admin can set them up with /setbull.'
+      );
+      return;
+    }
+
+    const n = Math.max(1, Math.min(Number(group.winner_count) || 1, 50));
+    const shares = cascadingShares(group.reward_amount, n);
+    const tokenName = await getTokenMetadataName(group.reward_mint).catch(() => 'tokens');
+    const lines = ['<b>Current prizes for this round</b>'];
+    for (let i = 0; i < shares.length; i++) {
+      lines.push(`${placeLabel(i)}: ${formatPrizeAmount(shares[i])} ${tokenName}`);
+    }
+
+    const periodHours = Math.max(1, Number(group.period_hours) || 1);
+    if (group.period_started_at) {
+      const endMs = new Date(group.period_started_at).getTime() + periodHours * 3600000;
+      const left = endMs - Date.now();
+      if (left > 0) {
+        lines.push('');
+        lines.push(`You have <b>${formatDuration(left)}</b> remaining in this round.`);
+      } else {
+        lines.push('');
+        lines.push('This round has ended — payout is pending.');
+      }
+    } else {
+      lines.push('');
+      lines.push('The reward period has not started yet.');
+    }
+
+    prizeCooldownAt.set(cdKey, Date.now());
+    await sendWithFooter(chatId, lines.join('\n'));
+  } catch (err) {
+    console.error('prize error', err);
+    await sendWithFooter(chatId, 'Could not load prize info right now.');
   }
 });
 

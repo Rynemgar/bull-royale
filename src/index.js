@@ -53,6 +53,17 @@ function isAdminUser(id) {
   return id === ADMIN_USER_ID || EXTRA_ADMIN_USER_IDS.has(id);
 }
 
+/** /setbull: Telegram group admin/creator, or primary owner. */
+async function canManageSetbull(chatId, userId) {
+  if (Number(userId) === ADMIN_USER_ID) return true;
+  try {
+    const member = await bot.getChatMember(chatId, userId);
+    return member?.status === 'creator' || member?.status === 'administrator';
+  } catch {
+    return false;
+  }
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.join(__dirname, '..', 'assets');
 const POSTER_IMAGE = path.join(ASSETS_DIR, 'poster.png');
@@ -580,10 +591,10 @@ bot.onText(commandRegex('update'), async (msg) => {
 
 const pendingImageUpdate = new Map();
 
-// /setbull — admin rewards dashboard
+// /setbull — group admin (or primary owner) rewards dashboard
 bot.onText(commandRegex('setbull'), async (msg) => {
   if (!msg.chat || !msg.from) return;
-  if (!isAdminUser(msg.from.id)) return;
+  if (!(await canManageSetbull(msg.chat.id, msg.from.id))) return;
   const chatId = msg.chat.id;
   try {
     // Replace any prior session so only this admin owns the new menu
@@ -721,8 +732,8 @@ bot.on('message', async (msg) => {
       return;
     }
 
-    // /setbull admin force-reply inputs
-    if (msg.from && isAdminUser(msg.from.id)) {
+    // /setbull force-reply inputs (only the user who started the prompt)
+    if (msg.from && pendingSetbull.has(msg.from.id)) {
       if (await handleSetbullPendingInput(bot, msg, addFooter)) return;
     }
 
@@ -832,8 +843,8 @@ bot.on('callback_query', async (query) => {
   const fromId = from.id;
 
   if (data.startsWith('sb:')) {
-    if (!isAdminUser(fromId)) {
-      if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Admin only.', show_alert: true });
+    if (!(await canManageSetbull(chatId, fromId))) {
+      if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Group admins only.', show_alert: true });
       return;
     }
     try {

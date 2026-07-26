@@ -23,7 +23,8 @@ A Telegram group game where members grow their horns, challenge others to horn c
 - `TELEGRAM_BOT_TOKEN` (required)
 - `DATABASE_URL` (required in production; local Postgres supported)
 - `PORT` (Heroku provides this automatically)
-- `ALERT_DESTINATION` (optional; where new-group alerts are sent)
+- `WALLET_ENCRYPTION_KEY` (required for /setbull treasury wallets; 32 bytes as 64 hex chars or base64)
+- `SOLANA_RPC_URL` (optional; defaults to Solana mainnet-beta)
 
 > Note: You can create a local `.env` file with these variables for local development.
 

@@ -90,6 +90,51 @@ export async function initSchema() {
         updated_at timestamptz not null default now()
       );
     `);
+    await client.query(`
+      create table if not exists pf_group_rewards (
+        chat_id bigint primary key,
+        wallet_pubkey text,
+        wallet_privkey_enc text,
+        reward_mint text,
+        reward_amount numeric(24,8),
+        winner_count integer not null default 3,
+        period_hours numeric(10,2) not null default 72,
+        period_started_at timestamptz,
+        last_payout_at timestamptz,
+        last_low_balance_alert_at timestamptz,
+        updated_at timestamptz not null default now()
+      );
+    `);
+    await client.query(`
+      create table if not exists pf_user_wallets (
+        chat_id bigint not null,
+        user_id bigint not null,
+        solana_address text not null,
+        updated_at timestamptz not null default now(),
+        primary key (chat_id, user_id)
+      );
+    `);
+    await client.query(`
+      create table if not exists pf_reward_blacklist (
+        chat_id bigint not null,
+        user_id bigint not null,
+        created_by bigint,
+        created_at timestamptz not null default now(),
+        primary key (chat_id, user_id)
+      );
+    `);
+    await client.query(`
+      create table if not exists pf_reward_payouts (
+        id bigserial primary key,
+        chat_id bigint not null,
+        user_id bigint not null,
+        amount numeric(24,8) not null,
+        signature text,
+        period_started_at timestamptz,
+        created_at timestamptz not null default now()
+      );
+    `);
+    await client.query(`create index if not exists idx_pf_reward_payouts_chat on pf_reward_payouts(chat_id, created_at desc);`);
   } finally {
     client.release();
   }
@@ -448,4 +493,184 @@ export async function setImageUrl(key, url) {
     [key, url]
   );
   return res.rows[0];
+}
+
+function mapGroupRewards(row) {
+  if (!row) return null;
+  return {
+    chat_id: Number(row.chat_id),
+    wallet_pubkey: row.wallet_pubkey || null,
+    wallet_privkey_enc: row.wallet_privkey_enc || null,
+    reward_mint: row.reward_mint || null,
+    reward_amount: row.reward_amount == null ? null : Number(row.reward_amount),
+    winner_count: Number(row.winner_count ?? 3),
+    period_hours: Number(row.period_hours ?? 72),
+    period_started_at: row.period_started_at || null,
+    last_payout_at: row.last_payout_at || null,
+    last_low_balance_alert_at: row.last_low_balance_alert_at || null,
+    updated_at: row.updated_at || null
+  };
+}
+
+export async function getGroupRewards(chatId) {
+  const res = await pool.query(`select * from pf_group_rewards where chat_id = $1`, [chatId]);
+  return mapGroupRewards(res.rows[0]);
+}
+
+export async function ensureGroupRewards(chatId) {
+  await pool.query(
+    `insert into pf_group_rewards (chat_id) values ($1) on conflict (chat_id) do nothing`,
+    [chatId]
+  );
+  return getGroupRewards(chatId);
+}
+
+export async function setGroupWallet(chatId, pubkey, privkeyEnc) {
+  await ensureGroupRewards(chatId);
+  const res = await pool.query(
+    `update pf_group_rewards
+     set wallet_pubkey = $2, wallet_privkey_enc = $3, updated_at = now()
+     where chat_id = $1
+     returning *`,
+    [chatId, pubkey, privkeyEnc]
+  );
+  return mapGroupRewards(res.rows[0]);
+}
+
+export async function updateGroupRewards(chatId, fields) {
+  await ensureGroupRewards(chatId);
+  const allowed = [
+    'reward_mint',
+    'reward_amount',
+    'winner_count',
+    'period_hours',
+    'period_started_at',
+    'last_payout_at',
+    'last_low_balance_alert_at'
+  ];
+  const sets = [];
+  const vals = [chatId];
+  for (const key of allowed) {
+    if (!Object.prototype.hasOwnProperty.call(fields, key)) continue;
+    vals.push(fields[key]);
+    sets.push(`${key} = $${vals.length}`);
+  }
+  if (sets.length === 0) return getGroupRewards(chatId);
+  sets.push('updated_at = now()');
+  const res = await pool.query(
+    `update pf_group_rewards set ${sets.join(', ')} where chat_id = $1 returning *`,
+    vals
+  );
+  return mapGroupRewards(res.rows[0]);
+}
+
+export async function listGroupsDueForRewards() {
+  const res = await pool.query(
+    `select * from pf_group_rewards
+     where wallet_pubkey is not null
+       and wallet_privkey_enc is not null
+       and reward_mint is not null
+       and reward_amount is not null
+       and reward_amount > 0
+       and winner_count >= 1
+       and period_started_at is not null`
+  );
+  return res.rows.map(mapGroupRewards);
+}
+
+export async function setUserWallet(chatId, userId, solanaAddress) {
+  const res = await pool.query(
+    `insert into pf_user_wallets (chat_id, user_id, solana_address, updated_at)
+     values ($1, $2, $3, now())
+     on conflict (chat_id, user_id) do update
+       set solana_address = excluded.solana_address, updated_at = now()
+     returning *`,
+    [chatId, userId, solanaAddress]
+  );
+  return res.rows[0];
+}
+
+export async function getUserWallet(chatId, userId) {
+  const res = await pool.query(
+    `select * from pf_user_wallets where chat_id = $1 and user_id = $2`,
+    [chatId, userId]
+  );
+  return res.rows[0] || null;
+}
+
+export async function addRewardBlacklist(chatId, userId, createdBy = null) {
+  await pool.query(
+    `insert into pf_reward_blacklist (chat_id, user_id, created_by)
+     values ($1, $2, $3)
+     on conflict (chat_id, user_id) do nothing`,
+    [chatId, userId, createdBy]
+  );
+}
+
+export async function removeRewardBlacklist(chatId, userId) {
+  await pool.query(
+    `delete from pf_reward_blacklist where chat_id = $1 and user_id = $2`,
+    [chatId, userId]
+  );
+}
+
+export async function getRewardBlacklistPage(chatId, page = 0, pageSize = 5) {
+  const offset = Math.max(0, page) * pageSize;
+  const countRes = await pool.query(
+    `select count(*)::int as n from pf_reward_blacklist where chat_id = $1`,
+    [chatId]
+  );
+  const total = countRes.rows[0]?.n || 0;
+  const res = await pool.query(
+    `
+    select b.user_id, b.created_at, u.username, u.first_name
+    from pf_reward_blacklist b
+    left join pf_users u on u.chat_id = b.chat_id and u.user_id = b.user_id
+    where b.chat_id = $1
+    order by b.created_at desc
+    limit $2 offset $3
+    `,
+    [chatId, pageSize, offset]
+  );
+  return { total, page, pageSize, rows: res.rows };
+}
+
+export async function getEligibleRewardWinners(chatId, limit) {
+  const lim = Math.max(1, Math.min(Number(limit) || 1, 50));
+  const res = await pool.query(
+    `
+    select u.user_id, u.username, u.first_name, u.length_cm, u.wins, w.solana_address
+    from pf_users u
+    inner join pf_user_wallets w
+      on w.chat_id = u.chat_id and w.user_id = u.user_id
+    where u.chat_id = $1
+      and not exists (
+        select 1 from pf_reward_blacklist b
+        where b.chat_id = u.chat_id and b.user_id = u.user_id
+      )
+    order by u.length_cm desc, u.wins desc, u.user_id asc
+    limit $2
+    `,
+    [chatId, lim]
+  );
+  return res.rows;
+}
+
+export async function recordRewardPayout({ chatId, userId, amount, signature, periodStartedAt }) {
+  const res = await pool.query(
+    `insert into pf_reward_payouts (chat_id, user_id, amount, signature, period_started_at)
+     values ($1, $2, $3, $4, $5)
+     returning *`,
+    [chatId, userId, amount, signature || null, periodStartedAt || null]
+  );
+  return res.rows[0];
+}
+
+/** Maybe start the reward period once wallet + mint + amount are configured. */
+export async function maybeStartRewardPeriod(chatId) {
+  const row = await getGroupRewards(chatId);
+  if (!row) return row;
+  if (row.period_started_at) return row;
+  if (!row.wallet_pubkey || !row.reward_mint || !(row.reward_amount > 0)) return row;
+  return updateGroupRewards(chatId, { period_started_at: new Date() });
 }

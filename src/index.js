@@ -27,6 +27,16 @@ import {
   setImageUrl,
   roundCm
 } from './db.js';
+import {
+  buildSetbullMenu,
+  handleSetbullCallback,
+  handleSetbullPendingInput,
+  handleSetwalletPending,
+  startSetwalletFlow,
+  handleNobull,
+  pendingSetwallet,
+  runRewardTick
+} from './rewards.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
@@ -567,6 +577,44 @@ bot.onText(commandRegex('update'), async (msg) => {
 
 const pendingImageUpdate = new Map();
 
+// /setbull — admin rewards dashboard
+bot.onText(commandRegex('setbull'), async (msg) => {
+  if (!msg.chat || !msg.from) return;
+  if (!isAdminUser(msg.from.id)) return;
+  const chatId = msg.chat.id;
+  try {
+    const menu = await buildSetbullMenu(chatId);
+    await bot.sendMessage(chatId, addFooter(menu.text), {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: menu.reply_markup
+    });
+  } catch (err) {
+    console.error('setbull error', err);
+    await sendWithFooter(chatId, 'Could not open rewards settings.');
+  }
+});
+
+// /setwallet — register Solana address via DM
+bot.onText(commandRegex('setwallet'), async (msg) => {
+  if (!msg.chat || !msg.from) return;
+  try {
+    await ensureUser(msg.chat.id, msg.from);
+    await startSetwalletFlow(bot, msg, addFooter);
+  } catch (err) {
+    console.error('setwallet error', err);
+  }
+});
+
+// /nobull — admin blacklist by reply
+bot.onText(commandRegex('nobull'), async (msg) => {
+  try {
+    await handleNobull(bot, msg, addFooter, isAdminUser, getUsernameLabel);
+  } catch (err) {
+    console.error('nobull error', err);
+  }
+});
+
 // /stats
 bot.onText(commandRegex('stats', '(?:\\s+(.+))?(?:\\s|$)'), async (msg, match) => {
   if (!msg.chat || !msg.from) return;
@@ -637,6 +685,31 @@ bot.onText(commandRegex('bulloftheday'), async (msg) => {
 bot.on('message', async (msg) => {
   try {
     if (!msg.chat) return;
+
+    // /setwallet DM address capture
+    if (await handleSetwalletPending(bot, msg, addFooter, getUsernameLabel)) return;
+
+    // Cancel pending setwallet
+    if (
+      msg.chat.type === 'private' &&
+      msg.from &&
+      pendingSetwallet.has(msg.from.id) &&
+      typeof msg.text === 'string' &&
+      /^\/cancel(@\w+)?$/i.test(msg.text.trim())
+    ) {
+      pendingSetwallet.delete(msg.from.id);
+      await bot.sendMessage(msg.chat.id, addFooter('Wallet registration cancelled.'), {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true
+      });
+      return;
+    }
+
+    // /setbull admin force-reply inputs
+    if (msg.from && isAdminUser(msg.from.id)) {
+      if (await handleSetbullPendingInput(bot, msg, addFooter)) return;
+    }
+
     if (msg.from && isAdminUser(msg.from.id)) {
       const state = pendingImageUpdate.get(msg.from.id);
       if (state && msg.chat.id === state.chatId && msg.reply_to_message && msg.reply_to_message.message_id === state.replyToMessageId) {
@@ -741,6 +814,22 @@ bot.on('callback_query', async (query) => {
   const chatId = msg.chat.id;
   const from = query.from;
   const fromId = from.id;
+
+  if (data.startsWith('sb:')) {
+    if (!isAdminUser(fromId)) {
+      if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Admin only.', show_alert: true });
+      return;
+    }
+    try {
+      await handleSetbullCallback(bot, query, addFooter);
+    } catch (err) {
+      console.error('setbull callback error', err);
+      if (query.id) {
+        try { await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' }); } catch {}
+      }
+    }
+    return;
+  }
 
   if (data === 'grow_now') {
     try {
@@ -984,6 +1073,16 @@ async function start() {
   app.listen(port, () => {
     console.log(`HTTP server listening on ${port}`);
   });
+
+  const REWARD_TICK_MS = 5 * 60 * 1000;
+  const tick = () => {
+    runRewardTick(bot, addFooter, getUsernameLabel).catch((e) => {
+      console.error('reward tick error', e?.message || e);
+    });
+  };
+  tick();
+  setInterval(tick, REWARD_TICK_MS);
+
   process.once('SIGINT', () => bot.stopPolling());
   process.once('SIGTERM', () => bot.stopPolling());
 }

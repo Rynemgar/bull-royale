@@ -22,6 +22,7 @@ import {
   validateWalletAddress,
   getSolBalance,
   getTokenBalance,
+  getWalletTokenBalances,
   getTokenMetadataName,
   sendSplReward,
   cascadingShares
@@ -56,15 +57,26 @@ export async function buildSetbullMenu(chatId) {
       lines.push(`SOL: (unavailable)`);
       console.error('SOL balance error', e?.message || e);
     }
-    if (row.reward_mint) {
-      try {
-        const name = await getTokenMetadataName(row.reward_mint);
-        const bal = await getTokenBalance(row.wallet_pubkey, row.reward_mint);
-        lines.push(`${escHtml(name)}: ${bal.ui}`);
-      } catch (e) {
-        lines.push(`Token: (unavailable)`);
-        console.error('token balance error', e?.message || e);
+    try {
+      const tokens = await getWalletTokenBalances(row.wallet_pubkey);
+      if (tokens.length === 0) {
+        lines.push('Tokens: none');
+      } else {
+        lines.push('<b>Tokens</b>:');
+        for (const t of tokens.slice(0, 15)) {
+          const label = t.name || `${t.mint.slice(0, 4)}…${t.mint.slice(-4)}`;
+          const amount = Number.isFinite(t.ui)
+            ? t.ui.toLocaleString(undefined, { maximumFractionDigits: 6 })
+            : String(t.ui);
+          lines.push(`• ${escHtml(label)}: ${amount}`);
+        }
+        if (tokens.length > 15) {
+          lines.push(`…and ${tokens.length - 15} more`);
+        }
       }
+    } catch (e) {
+      lines.push('Tokens: (unavailable)');
+      console.error('wallet token balances error', e?.message || e);
     }
   }
 

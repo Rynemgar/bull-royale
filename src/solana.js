@@ -14,6 +14,7 @@ import {
   getMint,
   getAccount,
   TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
   ASSOCIATED_TOKEN_PROGRAM_ID
 } from '@solana/spl-token';
 
@@ -124,6 +125,55 @@ export async function getTokenBalance(ownerPubkey, mintStr) {
     const mintInfo = await getMint(conn, mint).catch(() => null);
     return { ui: 0, raw: 0n, decimals: mintInfo?.decimals ?? 0 };
   }
+}
+
+/** All non-zero SPL / Token-2022 balances for an owner wallet. */
+export async function getWalletTokenBalances(ownerPubkey) {
+  const conn = getConnection();
+  const owner = new PublicKey(ownerPubkey);
+  const programs = [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID];
+  const byMint = new Map();
+
+  for (const programId of programs) {
+    let resp;
+    try {
+      resp = await conn.getParsedTokenAccountsByOwner(owner, { programId });
+    } catch (e) {
+      console.error('getParsedTokenAccountsByOwner failed', programId.toBase58(), e?.message || e);
+      continue;
+    }
+    for (const { account } of resp.value) {
+      const info = account.data?.parsed?.info;
+      if (!info?.mint) continue;
+      const amount = info.tokenAmount;
+      const ui = Number(amount?.uiAmount);
+      if (!Number.isFinite(ui) || ui <= 0) continue;
+      const mint = info.mint;
+      const prev = byMint.get(mint);
+      if (!prev || ui > prev.ui) {
+        byMint.set(mint, {
+          mint,
+          ui,
+          decimals: Number(amount?.decimals ?? 0),
+          symbol: null,
+          name: null
+        });
+      }
+    }
+  }
+
+  const list = [...byMint.values()];
+  await Promise.all(
+    list.map(async (t) => {
+      try {
+        t.name = await getTokenMetadataName(t.mint);
+      } catch {
+        t.name = `${t.mint.slice(0, 4)}…${t.mint.slice(-4)}`;
+      }
+    })
+  );
+  list.sort((a, b) => b.ui - a.ui);
+  return list;
 }
 
 function readBorshString(buf, offset) {

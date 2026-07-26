@@ -26,7 +26,9 @@ import {
   getAllImages,
   setImageUrl,
   roundCm,
-  getGroupRewards
+  getGroupRewards,
+  ensureGroupRewards,
+  updateGroupRewards
 } from './db.js';
 import {
   buildSetbullMenu,
@@ -622,81 +624,54 @@ bot.onText(commandRegex('average'), async (msg) => {
   }
 });
 
-// /give @user <amount> — players transfer; admins can award/deduct
-bot.onText(commandRegex('give', '\\s+(.+?)\\s+(-?\\d+(?:\\.\\d{1,2})?)(?:\\s|$)'), async (msg, match) => {
+// /gift — admin drops a first-come claim for +5–20cm horns
+const openGifts = new Map(); // giftId -> { chatId, claimed }
+
+bot.onText(commandRegex('gift'), async (msg) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
   const from = msg.from;
-  await ensureUser(chatId, from);
-  const targetRef = (match?.[1] || '').trim();
-  const amount = roundCm(parseFloat(match?.[2] || '0'));
+
+  if (!(await canManageSetbull(chatId, from.id))) {
+    return;
+  }
+
   try {
-    const isAdmin = isAdminUser(from.id);
-    let targetUserId = null;
-    let targetLabel = null;
-    if (msg.reply_to_message && msg.reply_to_message.from) {
-      targetUserId = msg.reply_to_message.from.id;
-      targetLabel = getUsernameLabel(msg.reply_to_message.from);
-      await ensureUser(chatId, msg.reply_to_message.from);
-    } else {
-      const entities = msg.entities || [];
-      const textMention = entities.find(e => e.type === 'text_mention' && e.user);
-      if (textMention && textMention.user) {
-        targetUserId = textMention.user.id;
-        targetLabel = getUsernameLabel(textMention.user);
-        await ensureUser(chatId, textMention.user);
-      }
-      if (!targetUserId && targetRef.startsWith('@')) {
-        const u = await getUserByUsername(chatId, targetRef);
-        if (u) {
-          targetUserId = Number(u.user_id);
-          targetLabel = getUsernameLabel({ id: u.user_id, username: u.username, first_name: u.first_name });
-        }
-      }
-    }
-    if (!targetUserId) {
-      await sendWithGrow(chatId, 'Could not identify the target user. Reply to a user or mention someone I know.');
-      return;
-    }
-    if (!isAdmin) {
-      if (!Number.isFinite(amount) || amount <= 0) {
-        await sendWithGrow(chatId, 'Amount must be a positive number (up to 2 decimal places).');
-        return;
-      }
-      if (targetUserId === from.id) {
-        await sendWithGrow(chatId, 'You cannot transfer horns to yourself.');
-        return;
-      }
-      const me = await getUser(chatId, from.id);
-      if (!me || Number(me.length_cm) < amount) {
-        await sendWithGrow(chatId, `Insufficient horns. You have ${formatCm(me?.length_cm ?? 0)}cm but tried to give ${formatCm(amount)}cm.`);
-        return;
-      }
-      const fromLabel = getUsernameLabel(from);
-      await sendWithGrow(
+    const group = await ensureGroupRewards(chatId);
+    const cooldownMins = Math.max(1, Number(group.gift_cooldown_mins) || 30);
+    const lastGift = group.last_gift_at ? new Date(group.last_gift_at).getTime() : 0;
+    const cooldownMs = cooldownMins * 60 * 1000;
+    const elapsed = Date.now() - lastGift;
+    if (lastGift && elapsed < cooldownMs) {
+      const left = cooldownMs - elapsed;
+      await sendWithFooter(
         chatId,
-        `${fromLabel}, are you sure you want to give ${formatCm(amount)}cm of your horns to ${targetLabel}?`,
-        {
-          reply_markup: {
-            inline_keyboard: [[
-              { text: 'Confirm transfer', callback_data: `giveconf:${from.id}:${targetUserId}:${amount}` },
-              { text: 'Cancel', callback_data: `givecancel:${from.id}` }
-            ]]
-          }
-        }
+        `/gift is on cooldown. Try again in ${formatDuration(left)}.`
       );
       return;
     }
-    if (!Number.isFinite(amount) || amount === 0) {
-      await sendWithGrow(chatId, 'Amount must be a non-zero number (up to 2 decimal places).');
-      return;
-    }
-    const updated = await addLength(chatId, targetUserId, amount);
-    const sign = amount >= 0 ? '+' : '';
-    await sendWithGrow(chatId, `Awarded ${sign}${formatCm(amount)}cm to ${targetLabel}. New horns: ${formatCm(updated.length_cm)}cm.`);
+
+    await updateGroupRewards(chatId, { last_gift_at: new Date() });
+
+    const giftId = `${chatId}_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    openGifts.set(giftId, { chatId, claimed: false });
+
+    const adminLabel = getUsernameLabel(from);
+    const text =
+      `<b>Horn gift drop!</b>\n` +
+      `${adminLabel} dropped a gift.\n` +
+      `First to claim gets a random <b>+5–20cm</b> of horns.`;
+
+    await bot.sendMessage(chatId, addFooter(text), {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: {
+        inline_keyboard: [[{ text: 'Claim gift', callback_data: `giftclaim:${giftId}` }]]
+      }
+    });
   } catch (err) {
-    console.error('give error', err);
-    await sendWithGrow(chatId, 'Failed to process /give.');
+    console.error('gift error', err);
+    await sendWithFooter(chatId, 'Failed to drop a gift.');
   }
 });
 
@@ -1178,89 +1153,69 @@ bot.on('callback_query', async (query) => {
     return;
   }
 
-  if (data.startsWith('giveconf:')) {
+  if (data.startsWith('giftclaim:')) {
+    const giftId = data.slice('giftclaim:'.length);
+    const gift = openGifts.get(giftId);
     try {
-      const parts = data.split(':');
-      const requesterId = Number(parts[1]);
-      const targetId = Number(parts[2]);
-      const amount = roundCm(Number(parts[3]));
-      if (fromId !== requesterId) {
-        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Only the requester can confirm this transfer.', show_alert: true });
+      if (!gift || gift.chatId !== chatId) {
+        if (query.id) {
+          await bot.answerCallbackQuery(query.id, { text: 'This gift is no longer available.', show_alert: true });
+        }
         return;
       }
+      if (gift.claimed) {
+        if (query.id) {
+          await bot.answerCallbackQuery(query.id, { text: 'Already claimed!', show_alert: true });
+        }
+        return;
+      }
+      // First-come lock
+      gift.claimed = true;
+
       await ensureUser(chatId, from);
-      const me = await getUser(chatId, requesterId);
-      if (!Number.isFinite(amount) || amount <= 0) {
-        await bot.answerCallbackQuery(query.id, { text: 'Invalid amount.' });
-        return;
-      }
-      if (!me || Number(me.length_cm) < amount) {
-        const fromLabel = getUsernameLabel(from);
-        const failText = `Transfer failed: insufficient horns.\n${fromLabel} has ${formatCm(me?.length_cm ?? 0)}cm but tried to give ${formatCm(amount)}cm.`;
+      const amount = roundCm(5 + Math.random() * 15); // 5.00 .. 20.00
+      const updated = await addLength(chatId, fromId, amount);
+      const label = getUsernameLabel(from);
+      const text =
+        `<b>Gift claimed!</b>\n` +
+        `${label} claimed <b>+${formatCm(amount)}cm</b> of horns.\n` +
+        `New length: <b>${formatCm(updated.length_cm)}cm</b>.`;
+
+      let edited = false;
+      try {
+        await bot.editMessageText(addFooter(text), {
+          chat_id: chatId,
+          message_id: msg.message_id,
+          parse_mode: 'HTML',
+          disable_web_page_preview: true,
+          reply_markup: { inline_keyboard: [] }
+        });
+        edited = true;
+      } catch {}
+      if (!edited) {
         try {
-          await bot.editMessageText(addFooter(failText), {
+          await bot.editMessageCaption(addFooter(text), {
             chat_id: chatId,
             message_id: msg.message_id,
             parse_mode: 'HTML',
-            disable_web_page_preview: true
+            reply_markup: { inline_keyboard: [] }
           });
-        } catch {
-          await sendWithFooter(chatId, failText);
-        }
-        if (query.id) await bot.answerCallbackQuery(query.id);
-        return;
+          edited = true;
+        } catch {}
       }
-      await addLength(chatId, requesterId, -amount);
-      const updatedTarget = await addLength(chatId, targetId, amount);
-      const updatedMe = await getUser(chatId, requesterId);
-      const fromLabel = getUsernameLabel(from);
-      const targetUser = await getUser(chatId, targetId);
-      const targetLabel = getUsernameLabel({ id: targetId, username: targetUser?.username, first_name: targetUser?.first_name });
-      const text = `Transferred ${formatCm(amount)}cm of horns from ${fromLabel} to ${targetLabel}.\n${fromLabel}: ${formatCm(updatedMe.length_cm)}cm\n${targetLabel}: ${formatCm(updatedTarget.length_cm)}cm`;
-      try {
-        await bot.editMessageText(addFooter(text), {
-          chat_id: chatId,
-          message_id: msg.message_id,
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        });
-      } catch {
+      if (!edited) {
         await sendWithFooter(chatId, text);
       }
-      if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Transfer complete!' });
-    } catch (err) {
-      console.error('giveconf error', err);
-      if (query.id) {
-        try { await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' }); } catch {}
-      }
-    }
-    return;
-  }
 
-  if (data.startsWith('givecancel:')) {
-    try {
-      const parts = data.split(':');
-      const requesterId = Number(parts[1]);
-      if (fromId !== requesterId) {
-        if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Only the requester can cancel.', show_alert: true });
-        return;
-      }
-      const text = `${getUsernameLabel(from)} cancelled the transfer.`;
-      try {
-        await bot.editMessageText(addFooter(text), {
-          chat_id: chatId,
-          message_id: msg.message_id,
-          parse_mode: 'HTML',
-          disable_web_page_preview: true
-        });
-      } catch {
-        await sendWithFooter(chatId, text);
-      }
-      if (query.id) await bot.answerCallbackQuery(query.id, { text: 'Cancelled' });
+      if (query.id) await bot.answerCallbackQuery(query.id, { text: `+${formatCm(amount)}cm!` });
+      openGifts.delete(giftId);
     } catch (err) {
-      console.error('givecancel error', err);
+      console.error('giftclaim error', err);
+      if (gift?.claimed) {
+        gift.claimed = false;
+      }
       if (query.id) {
-        try { await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' }); } catch {}
+        try { await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.', show_alert: true }); } catch {}
       }
     }
     return;

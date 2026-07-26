@@ -102,9 +102,22 @@ export async function initSchema() {
         period_started_at timestamptz,
         last_payout_at timestamptz,
         last_low_balance_alert_at timestamptz,
+        gift_cooldown_mins integer not null default 30,
+        last_gift_at timestamptz,
         updated_at timestamptz not null default now()
       );
     `);
+    await client.query(`
+      alter table pf_group_rewards
+        add column if not exists gift_cooldown_mins integer default 30
+    `).catch(() => {});
+    await client.query(`
+      update pf_group_rewards set gift_cooldown_mins = 30 where gift_cooldown_mins is null
+    `).catch(() => {});
+    await client.query(`
+      alter table pf_group_rewards
+        add column if not exists last_gift_at timestamptz
+    `).catch(() => {});
     await client.query(`
       update pf_group_rewards set period_hours = 1 where period_hours is not null and period_hours < 1
     `);
@@ -535,6 +548,8 @@ function mapGroupRewards(row) {
     period_started_at: row.period_started_at || null,
     last_payout_at: row.last_payout_at || null,
     last_low_balance_alert_at: row.last_low_balance_alert_at || null,
+    gift_cooldown_mins: Number(row.gift_cooldown_mins ?? 30),
+    last_gift_at: row.last_gift_at || null,
     updated_at: row.updated_at || null
   };
 }
@@ -573,7 +588,9 @@ export async function updateGroupRewards(chatId, fields) {
     'period_hours',
     'period_started_at',
     'last_payout_at',
-    'last_low_balance_alert_at'
+    'last_low_balance_alert_at',
+    'gift_cooldown_mins',
+    'last_gift_at'
   ];
   const sets = [];
   const vals = [chatId];

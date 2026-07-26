@@ -132,6 +132,7 @@ export async function buildSetbullMenu(chatId, viewerUserId = null) {
   lines.push(`Reward amount: ${row.reward_amount != null ? row.reward_amount : '(not set)'}`);
   lines.push(`Winners: ${row.winner_count}`);
   lines.push(`Timer: ${row.period_hours}h`);
+  lines.push(`Gift cooldown: ${row.gift_cooldown_mins ?? 30} min`);
   if (row.period_started_at) {
     const hours = Math.max(MIN_PERIOD_HOURS, Number(row.period_hours) || MIN_PERIOD_HOURS);
     const end = new Date(new Date(row.period_started_at).getTime() + hours * 3600000);
@@ -144,6 +145,7 @@ export async function buildSetbullMenu(chatId, viewerUserId = null) {
   keyboard.push([{ text: 'Set reward amount', callback_data: 'sb:setamount' }]);
   keyboard.push([{ text: 'Set number of winners', callback_data: 'sb:setwinners' }]);
   keyboard.push([{ text: 'Set timer', callback_data: 'sb:settimer' }]);
+  keyboard.push([{ text: 'Set gift cooldown', callback_data: 'sb:setgiftcd' }]);
   if (canRunRewardsNow(viewerUserId)) {
     keyboard.push([{ text: 'Run Rewards Now', callback_data: 'sb:runnow' }]);
   }
@@ -329,6 +331,18 @@ export async function handleSetbullCallback(bot, query, addFooter, getUsernameLa
     );
     return true;
   }
+  if (data === 'sb:setgiftcd') {
+    if (query.id) await bot.answerCallbackQuery(query.id);
+    await promptSetbullField(
+      bot,
+      chatId,
+      query.from,
+      'giftcd',
+      'Reply with the /gift cooldown in minutes (minimum 1, default 30).',
+      msg.message_id
+    );
+    return true;
+  }
 
   if (data === 'sb:runnow') {
     if (!canRunRewardsNow(fromId)) {
@@ -469,6 +483,14 @@ export async function handleSetbullPendingInput(bot, msg, addFooter) {
           period_hours: hours,
           period_started_at: new Date()
         });
+        ok = true;
+      }
+    } else if (state.field === 'giftcd') {
+      const mins = parseInt(text, 10);
+      if (!Number.isFinite(mins) || mins < 1 || mins > 10080) {
+        errText = 'Gift cooldown must be an integer from 1 to 10080 minutes.';
+      } else {
+        await updateGroupRewards(chatId, { gift_cooldown_mins: mins });
         ok = true;
       }
     }

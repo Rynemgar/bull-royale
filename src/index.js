@@ -28,7 +28,8 @@ import {
   roundCm,
   getGroupRewards,
   ensureGroupRewards,
-  updateGroupRewards
+  updateGroupRewards,
+  GROW_COOLDOWN_HOURS
 } from './db.js';
 import {
   buildSetbullMenu,
@@ -465,7 +466,7 @@ const HELP_TEXT =
   `• The leaderboard updates as bulls grow and battle.\n` +
   `• The goal is to grow the biggest horns and become the Alpha Bull.\n\n` +
   `<b>Commands</b>\n` +
-  `• /grow — Increase your horn length once every 8 hours. Use this regularly to keep growing.\n\n` +
+  `• /grow — Increase your horn length once every ${GROW_COOLDOWN_HOURS} hours. Use this regularly to keep growing.\n\n` +
   `• /attack — Challenge another player to a duel. Win to steal your opponent's horn length. Lose and they take yours.\n\n` +
   `• /attack [amount] — Duel another player for a chosen amount of horn length.\n` +
   `Example: /attack 30\n\n` +
@@ -560,7 +561,7 @@ async function notifyBotAddedToGroup(chat, actor) {
         `<b>Bull Royale</b> has entered the arena.\n` +
         `Grow. Duel. Steal horns.\n\n` +
         `<b>Commands</b>\n` +
-        `/grow — Grow your horns (every 8h)\n` +
+        `/grow — Grow your horns (every ${GROW_COOLDOWN_HOURS}h)\n` +
         `/attack &lt;bet&gt; — Challenge a Horn Clash\n` +
         `/stats — Horn length &amp; W/L\n` +
         `/top — Top 10 in this group\n` +
@@ -582,7 +583,7 @@ async function performGrow(chatId, user) {
     const remaining = await getGrowCooldownRemainingMs(chatId, userId, utcNow);
     const caption =
       `You've already grown your horns recently. Wait ${formatCooldown(remaining)}.\n` +
-      `Free growth resets every 8 hours.`;
+      `Free growth resets every ${GROW_COOLDOWN_HOURS} hours.`;
     await sendKeyedMedia(chatId, 'grow', {
       parse_mode: 'HTML',
       caption: addFooter(caption)

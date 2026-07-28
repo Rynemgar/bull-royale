@@ -16,7 +16,16 @@ export const pool = new Pool({
     : false
 });
 
-const GROW_COOLDOWN_MS = 8 * 60 * 60 * 1000; // 8 hours
+/** Hours between /grow uses. Set GROW_COOLDOWN_HOURS in env (default 8). */
+function parseGrowCooldownHours() {
+  const raw = Number(process.env.GROW_COOLDOWN_HOURS);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return 8;
+}
+
+export const GROW_COOLDOWN_HOURS = parseGrowCooldownHours();
+export const GROW_COOLDOWN_MS = GROW_COOLDOWN_HOURS * 60 * 60 * 1000;
+console.log(`[config] GROW_COOLDOWN_HOURS=${GROW_COOLDOWN_HOURS} (${GROW_COOLDOWN_MS}ms)`);
 
 export function roundCm(n) {
   const v = Number(n);

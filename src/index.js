@@ -29,7 +29,9 @@ import {
   getGroupRewards,
   ensureGroupRewards,
   updateGroupRewards,
-  GROW_COOLDOWN_HOURS
+  GROW_COOLDOWN_HOURS,
+  getGiftClaimCooldownRemainingMs,
+  recordGiftClaim
 } from './db.js';
 import {
   buildSetbullMenu,
@@ -1303,12 +1305,25 @@ bot.on('callback_query', async (query) => {
         }
         return;
       }
-      // First-come lock
-      gift.claimed = true;
 
       await ensureUser(chatId, from);
+      const claimCdLeft = await getGiftClaimCooldownRemainingMs(chatId, fromId);
+      if (claimCdLeft > 0) {
+        if (query.id) {
+          await bot.answerCallbackQuery(query.id, {
+            text: `You've already claimed a gift recently. Try again in ${formatDuration(claimCdLeft)}.`,
+            show_alert: true
+          });
+        }
+        return;
+      }
+
+      // First-come lock (after personal cooldown check so the drop stays open)
+      gift.claimed = true;
+
       const amount = roundCm(5 + Math.random() * 15); // 5.00 .. 20.00
       const updated = await addLength(chatId, fromId, amount);
+      await recordGiftClaim(chatId, fromId);
       const label = getUsernameLabel(from);
       const text =
         `<b>Gift claimed!</b>\n` +

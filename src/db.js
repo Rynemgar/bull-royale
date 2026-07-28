@@ -27,6 +27,17 @@ export const GROW_COOLDOWN_HOURS = parseGrowCooldownHours();
 export const GROW_COOLDOWN_MS = GROW_COOLDOWN_HOURS * 60 * 60 * 1000;
 console.log(`[config] GROW_COOLDOWN_HOURS=${GROW_COOLDOWN_HOURS} (${GROW_COOLDOWN_MS}ms)`);
 
+/** Hours between gift claims per user. Set GIFT_CLAIM_COOLDOWN_HOURS in env (default 6). */
+function parseGiftClaimCooldownHours() {
+  const raw = Number(process.env.GIFT_CLAIM_COOLDOWN_HOURS);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return 6;
+}
+
+export const GIFT_CLAIM_COOLDOWN_HOURS = parseGiftClaimCooldownHours();
+export const GIFT_CLAIM_COOLDOWN_MS = GIFT_CLAIM_COOLDOWN_HOURS * 60 * 60 * 1000;
+console.log(`[config] GIFT_CLAIM_COOLDOWN_HOURS=${GIFT_CLAIM_COOLDOWN_HOURS} (${GIFT_CLAIM_COOLDOWN_MS}ms)`);
+
 export function roundCm(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return 0;
@@ -59,6 +70,10 @@ export async function initSchema() {
       alter table pf_users
       add column if not exists last_grow_at timestamptz null
     `);
+    await client.query(`
+      alter table pf_users
+      add column if not exists last_gift_claim_at timestamptz null
+    `).catch(() => {});
     // Migrate legacy once-per-day date into last_grow_at (midnight of that date) if needed
     await client.query(`
       update pf_users
@@ -245,6 +260,23 @@ export async function getGrowCooldownRemainingMs(chatId, userId, utcNow = new Da
   if (res.rowCount === 0 || !res.rows[0].last_grow_at) return 0;
   const elapsed = utcNow.getTime() - new Date(res.rows[0].last_grow_at).getTime();
   return Math.max(0, GROW_COOLDOWN_MS - elapsed);
+}
+
+export async function getGiftClaimCooldownRemainingMs(chatId, userId, utcNow = new Date()) {
+  const res = await pool.query(
+    `select last_gift_claim_at from pf_users where chat_id=$1 and user_id=$2`,
+    [chatId, userId]
+  );
+  if (res.rowCount === 0 || !res.rows[0].last_gift_claim_at) return 0;
+  const elapsed = utcNow.getTime() - new Date(res.rows[0].last_gift_claim_at).getTime();
+  return Math.max(0, GIFT_CLAIM_COOLDOWN_MS - elapsed);
+}
+
+export async function recordGiftClaim(chatId, userId, utcNow = new Date()) {
+  await pool.query(
+    `update pf_users set last_gift_claim_at = $1 where chat_id = $2 and user_id = $3`,
+    [utcNow.toISOString(), chatId, userId]
+  );
 }
 
 export async function applyGrowth(chatId, userId, delta, utcNow = new Date()) {

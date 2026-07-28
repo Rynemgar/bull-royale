@@ -243,39 +243,62 @@ async function cacheSentMediaFileId(key, sentMsg) {
 /** Serialize sends per media key so the first upload is cached before others run. */
 const mediaSendChains = new Map(); // key -> Promise
 
+async function sendKeyedMediaOnce(chatId, key, options = {}) {
+  const use = resolveMedia(key);
+  if (!use || !use.media) {
+    const { caption, ...rest } = options;
+    return bot.sendMessage(chatId, caption || '', {
+      parse_mode: rest.parse_mode || 'HTML',
+      disable_web_page_preview: true,
+      reply_markup: rest.reply_markup
+    });
+  }
+
+  const stillNeedsUpload = shouldCacheMediaFileId(getImageUrl(key));
+  let msg;
+  if (use.type === 'video') {
+    msg = await bot.sendVideo(chatId, use.media, options);
+  } else if (use.type === 'animation') {
+    msg = await bot.sendAnimation(chatId, use.media, options);
+  } else {
+    msg = await bot.sendPhoto(chatId, use.media, options);
+  }
+
+  if (stillNeedsUpload && msg) {
+    await cacheSentMediaFileId(key, msg);
+  }
+  return msg;
+}
+
 async function sendKeyedMedia(chatId, key, options = {}) {
   const prev = mediaSendChains.get(key) || Promise.resolve();
   let release;
   const mine = new Promise((resolve) => { release = resolve; });
-  // Next waiter awaits our full turn (prev → work → release)
   mediaSendChains.set(key, prev.then(() => mine));
 
   await prev;
   try {
-    const use = resolveMedia(key);
-    if (!use || !use.media) {
-      const { caption, ...rest } = options;
-      return await bot.sendMessage(chatId, caption || '', {
-        parse_mode: rest.parse_mode || 'HTML',
-        disable_web_page_preview: true,
-        reply_markup: rest.reply_markup
-      });
+    try {
+      return await sendKeyedMediaOnce(chatId, key, options);
+    } catch (err) {
+      const current = getImageUrl(key);
+      // Stale/invalid Telegram file_id → fall back to bundled default and retry once
+      if (isTelegramFileRef(current) && isBadTelegramFileIdError(err) && DEFAULT_IMAGES[key]) {
+        console.error(
+          `[media] bad file_id for ${key}, reverting to default and retrying:`,
+          formatTelegramError(err)
+        );
+        imagesCache[key] = DEFAULT_IMAGES[key];
+        try {
+          await setImageUrl(key, DEFAULT_IMAGES[key]);
+        } catch (e) {
+          console.error('failed to revert media key', key, e?.message || e);
+        }
+        return await sendKeyedMediaOnce(chatId, key, options);
+      }
+      console.error(`[media] send failed for ${key}:`, formatTelegramError(err));
+      throw err;
     }
-
-    const stillNeedsUpload = shouldCacheMediaFileId(getImageUrl(key));
-    let msg;
-    if (use.type === 'video') {
-      msg = await bot.sendVideo(chatId, use.media, options);
-    } else if (use.type === 'animation') {
-      msg = await bot.sendAnimation(chatId, use.media, options);
-    } else {
-      msg = await bot.sendPhoto(chatId, use.media, options);
-    }
-
-    if (stillNeedsUpload && msg) {
-      await cacheSentMediaFileId(key, msg);
-    }
-    return msg;
   } finally {
     release();
   }
@@ -487,8 +510,36 @@ async function reloadImagesCache() {
 }
 await reloadImagesCache();
 
+/** Compact Telegram / HTTP errors (avoid dumping full response objects into logs). */
+function formatTelegramError(err) {
+  if (!err) return 'unknown error';
+  const status = err.response?.statusCode || err.response?.status || err.code;
+  const body = err.response?.body;
+  const desc =
+    (typeof body === 'object' && (body.description || body.error_code))
+      ? `${body.error_code || ''} ${body.description || ''}`.trim()
+      : (typeof body === 'string' ? body.slice(0, 200) : null);
+  const msg = err.message || String(err);
+  if (status || desc) {
+    return [msg, status && `status=${status}`, desc && `body=${desc}`].filter(Boolean).join(' | ');
+  }
+  return msg;
+}
+
+function isBadTelegramFileIdError(err) {
+  const text = `${err?.message || ''} ${err?.response?.body?.description || ''}`.toLowerCase();
+  return (
+    text.includes('wrong file_id') ||
+    text.includes('file is too big') ||
+    text.includes('failed to get http url content') ||
+    text.includes('wrong type of the web page content') ||
+    text.includes('failed to get file') ||
+    /bad request:.*file/i.test(text)
+  );
+}
+
 bot.on('polling_error', (err) => {
-  console.error('[polling_error]', err?.message || err);
+  console.error('[polling_error]', formatTelegramError(err));
 });
 
 const recentGroupWelcomes = new Map(); // chatId -> timestamp

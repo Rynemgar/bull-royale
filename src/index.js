@@ -551,6 +551,9 @@ bot.onText(commandRegex('prize'), async (msg) => {
     const shares = cascadingShares(group.reward_amount, n);
     const tokenName = await getTokenMetadataName(group.reward_mint).catch(() => 'tokens');
     const lines = ['<b>Current prizes for this round</b>'];
+    if (group.rewards_enabled === false) {
+      lines.push('<i>Rewards are currently OFF for this group.</i>');
+    }
     for (let i = 0; i < shares.length; i++) {
       lines.push(`${placeLabel(i)}: ${formatPrizeAmount(shares[i])} ${tokenName}`);
     }

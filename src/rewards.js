@@ -128,6 +128,7 @@ export async function buildSetbullMenu(chatId, viewerUserId = null) {
   }
 
   lines.push('');
+  lines.push(`Rewards: ${row.rewards_enabled !== false ? 'ON' : 'OFF'}`);
   lines.push(`Reward token: ${row.reward_mint ? `<code>${escHtml(row.reward_mint)}</code>` : '(not set)'}`);
   lines.push(`Reward amount: ${row.reward_amount != null ? row.reward_amount : '(not set)'}`);
   lines.push(`Winners: ${row.winner_count}`);
@@ -146,6 +147,10 @@ export async function buildSetbullMenu(chatId, viewerUserId = null) {
   keyboard.push([{ text: 'Set number of winners', callback_data: 'sb:setwinners' }]);
   keyboard.push([{ text: 'Set timer', callback_data: 'sb:settimer' }]);
   keyboard.push([{ text: 'Set gift cooldown', callback_data: 'sb:setgiftcd' }]);
+  keyboard.push([{
+    text: row.rewards_enabled !== false ? 'Turn rewards OFF' : 'Turn rewards ON',
+    callback_data: 'sb:togglerewards'
+  }]);
   if (canRunRewardsNow(viewerUserId)) {
     keyboard.push([{ text: 'Run Rewards Now', callback_data: 'sb:runnow' }]);
   }
@@ -343,6 +348,22 @@ export async function handleSetbullCallback(bot, query, addFooter, getUsernameLa
     );
     return true;
   }
+  if (data === 'sb:togglerewards') {
+    const group = await getGroupRewards(chatId);
+    const next = !(group?.rewards_enabled !== false);
+    await updateGroupRewards(chatId, {
+      rewards_enabled: next,
+      // When turning back on, restart the period clock so a backlog doesn't pay immediately
+      ...(next ? { period_started_at: new Date() } : {})
+    });
+    if (query.id) {
+      await bot.answerCallbackQuery(query.id, {
+        text: next ? 'Rewards turned ON.' : 'Rewards turned OFF.'
+      });
+    }
+    await refreshSetbullMenu(bot, chatId, addFooter, msg.message_id);
+    return true;
+  }
 
   if (data === 'sb:runnow') {
     if (!canRunRewardsNow(fromId)) {
@@ -355,6 +376,15 @@ export async function handleSetbullCallback(bot, query, addFooter, getUsernameLa
       return true;
     }
     const group = await getGroupRewards(chatId);
+    if (group && group.rewards_enabled === false) {
+      if (query.id) {
+        await bot.answerCallbackQuery(query.id, {
+          text: 'Rewards are turned OFF. Turn them on first.',
+          show_alert: true
+        });
+      }
+      return true;
+    }
     if (!group?.wallet_pubkey || !group?.reward_mint || !(group.reward_amount > 0)) {
       if (query.id) {
         await bot.answerCallbackQuery(query.id, {
@@ -644,6 +674,9 @@ async function processGroupPayout(bot, group, addFooter, getUsernameLabel, optio
   const now = new Date();
 
   if (!group.wallet_pubkey || !group.reward_mint || !(group.reward_amount > 0)) {
+    return { paid: false, due: false };
+  }
+  if (group.rewards_enabled === false && !force) {
     return { paid: false, due: false };
   }
 

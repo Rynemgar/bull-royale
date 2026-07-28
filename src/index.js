@@ -91,6 +91,7 @@ const DEFAULT_IMAGES = {
   top: null
 };
 let imagesCache = { ...DEFAULT_IMAGES };
+
 function getImageUrl(key) {
   const v = imagesCache[key];
   if (v) return v;
@@ -104,53 +105,88 @@ function isVideoMedia(ref) {
   return /\.(mp4|mov|webm|m4v)$/i.test(ref);
 }
 
+/** Strip photo:/video:/animation: prefix to get the raw Telegram file_id or path/URL. */
 function unwrapMediaRef(ref) {
-  if (!ref) return null;
-  if (typeof ref === 'string' && ref.startsWith('video:')) return ref.slice(6);
-  if (typeof ref === 'string' && ref.startsWith('animation:')) return ref.slice(10);
+  if (!ref || typeof ref !== 'string') return null;
+  if (/^(photo|video|animation):/i.test(ref)) {
+    return ref.replace(/^(photo|video|animation):/i, '');
+  }
   return ref;
 }
 
-function mediaInput(ref) {
+function isTelegramFileRef(ref) {
+  return typeof ref === 'string' && /^(photo|video|animation):/i.test(ref);
+}
+
+function isRemoteMediaUrl(ref) {
+  if (!ref || typeof ref !== 'string') return false;
   const raw = unwrapMediaRef(ref);
-  if (!raw) return null;
-  // Local file path
-  if (typeof raw === 'string' && (raw.includes(path.sep) || raw.includes('/')) && fs.existsSync(raw)) {
-    return raw;
+  return /^https?:\/\//i.test(raw);
+}
+
+function isLocalMediaPath(ref) {
+  if (!ref || typeof ref !== 'string') return false;
+  if (isTelegramFileRef(ref) || isRemoteMediaUrl(ref)) return false;
+  const raw = unwrapMediaRef(ref);
+  if (!raw) return false;
+  const looksPath =
+    raw.includes(path.sep) ||
+    raw.includes('/') ||
+    /^[A-Za-z]:[\\/]/.test(raw);
+  return looksPath && fs.existsSync(raw);
+}
+
+/** Still needs a one-time Telegram upload (local file or http URL). */
+function shouldCacheMediaFileId(ref) {
+  if (!ref || isTelegramFileRef(ref)) return false;
+  return isLocalMediaPath(ref) || isRemoteMediaUrl(ref);
+}
+
+/**
+ * Normalize anything we store in pf_images / imagesCache.
+ * Bare Telegram file_ids (from older /update) become photo:<id>.
+ */
+function normalizeImageRef(url) {
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  if (/^(photo|video|animation):/i.test(trimmed)) return trimmed;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  // Filesystem path (unix, windows, or relative with extension)
+  if (
+    /^[A-Za-z]:[\\/]/.test(trimmed) ||
+    trimmed.startsWith('/') ||
+    trimmed.includes(path.sep) ||
+    /\.(png|jpe?g|gif|webp|mp4|mov|webm|m4v)$/i.test(trimmed)
+  ) {
+    return trimmed;
   }
-  return raw; // URL or Telegram file_id
+  // Bare Telegram file_id from older saves
+  return `photo:${trimmed}`;
+}
+
+function mediaInput(ref) {
+  if (!ref) return null;
+  if (isTelegramFileRef(ref)) return unwrapMediaRef(ref);
+  if (isRemoteMediaUrl(ref)) return unwrapMediaRef(ref);
+  if (isLocalMediaPath(ref)) return unwrapMediaRef(ref);
+  // Fallback: treat as file_id or path string
+  return unwrapMediaRef(ref);
 }
 
 function resolveMedia(key) {
   const ref = getImageUrl(key);
   if (!ref) return null;
   let type = 'photo';
-  if (typeof ref === 'string' && ref.startsWith('animation:')) type = 'animation';
-  else if (isVideoMedia(ref)) type = 'video';
+  if (typeof ref === 'string') {
+    if (/^animation:/i.test(ref)) type = 'animation';
+    else if (/^video:/i.test(ref) || isVideoMedia(ref)) type = 'video';
+    else type = 'photo';
+  }
   return {
     type,
     media: mediaInput(ref)
   };
-}
-
-function isLocalMediaPath(ref) {
-  if (!ref || typeof ref !== 'string') return false;
-  const raw = unwrapMediaRef(ref);
-  return typeof raw === 'string' &&
-    (raw.includes(path.sep) || raw.includes('/')) &&
-    !/^https?:\/\//i.test(raw) &&
-    fs.existsSync(raw);
-}
-
-function isRemoteMediaUrl(ref) {
-  if (!ref || typeof ref !== 'string') return false;
-  const raw = unwrapMediaRef(ref);
-  return typeof raw === 'string' && /^https?:\/\//i.test(raw);
-}
-
-/** Local files and http(s) URLs should be uploaded once, then stored as file_id. */
-function shouldCacheMediaFileId(ref) {
-  return isLocalMediaPath(ref) || isRemoteMediaUrl(ref);
 }
 
 function fileIdRefFromSentMessage(sentMsg) {
@@ -158,14 +194,14 @@ function fileIdRefFromSentMessage(sentMsg) {
   if (sentMsg?.animation?.file_id) return `animation:${sentMsg.animation.file_id}`;
   if (Array.isArray(sentMsg?.photo) && sentMsg.photo.length > 0) {
     const best = sentMsg.photo.reduce((a, b) => ((a.file_size || 0) > (b.file_size || 0) ? a : b));
-    return best.file_id;
+    return `photo:${best.file_id}`;
   }
   if (sentMsg?.document?.file_id) {
     const mime = String(sentMsg.document.mime_type || '');
     if (mime.startsWith('video/') || isVideoMedia(sentMsg.document.file_name || '')) {
       return `video:${sentMsg.document.file_id}`;
     }
-    if (mime.startsWith('image/')) return sentMsg.document.file_id;
+    if (mime.startsWith('image/')) return `photo:${sentMsg.document.file_id}`;
   }
   return null;
 }
@@ -173,20 +209,20 @@ function fileIdRefFromSentMessage(sentMsg) {
 /** After uploading a local/remote asset once, persist Telegram file_id for reuse. */
 async function cacheSentMediaFileId(key, sentMsg) {
   const current = getImageUrl(key);
-  if (!shouldCacheMediaFileId(current)) return;
+  if (!shouldCacheMediaFileId(current)) return getImageUrl(key);
 
   const stored = fileIdRefFromSentMessage(sentMsg);
-  if (!stored) return;
+  if (!stored) {
+    console.error('cacheSentMediaFileId: no file_id in Telegram response for', key);
+    return current;
+  }
 
   const source = unwrapMediaRef(current);
   const keysToUpdate = new Set([key]);
   for (const [k, v] of Object.entries(imagesCache)) {
-    if (!v) continue;
-    if (shouldCacheMediaFileId(v) && unwrapMediaRef(v) === source) {
-      keysToUpdate.add(k);
-    }
+    if (!v || isTelegramFileRef(v)) continue;
+    if (unwrapMediaRef(v) === source) keysToUpdate.add(k);
   }
-  // snap / shrunk share the same default asset
   if (key === 'snap' || key === 'shrunk') {
     keysToUpdate.add('snap');
     keysToUpdate.add('shrunk');
@@ -196,40 +232,53 @@ async function cacheSentMediaFileId(key, sentMsg) {
     imagesCache[k] = stored;
     try {
       await setImageUrl(k, stored);
+      console.log(`[media] cached ${k} → ${stored.slice(0, 24)}…`);
     } catch (e) {
       console.error('Failed to cache media file_id', k, e?.message || e);
     }
   }
+  return stored;
 }
 
+/** Serialize sends per media key so the first upload is cached before others run. */
+const mediaSendChains = new Map(); // key -> Promise
+
 async function sendKeyedMedia(chatId, key, options = {}) {
-  const resolved = resolveMedia(key);
-  if (!resolved || !resolved.media) {
-    const { caption, ...rest } = options;
-    return bot.sendMessage(chatId, caption || '', {
-      parse_mode: rest.parse_mode || 'HTML',
-      disable_web_page_preview: true,
-      reply_markup: rest.reply_markup
-    });
-  }
-  const needsUpload = shouldCacheMediaFileId(getImageUrl(key));
-  let msg;
-  if (resolved.type === 'video') {
-    msg = await bot.sendVideo(chatId, resolved.media, options);
-  } else if (resolved.type === 'animation') {
-    msg = await bot.sendAnimation(chatId, resolved.media, options);
-  } else {
-    msg = await bot.sendPhoto(chatId, resolved.media, options);
-  }
-  if (needsUpload && msg) {
-    // Await so the next command in this group reuses file_id instead of re-uploading
-    try {
-      await cacheSentMediaFileId(key, msg);
-    } catch (e) {
-      console.error('cacheSentMediaFileId error', e?.message || e);
+  const prev = mediaSendChains.get(key) || Promise.resolve();
+  let release;
+  const mine = new Promise((resolve) => { release = resolve; });
+  // Next waiter awaits our full turn (prev → work → release)
+  mediaSendChains.set(key, prev.then(() => mine));
+
+  await prev;
+  try {
+    const use = resolveMedia(key);
+    if (!use || !use.media) {
+      const { caption, ...rest } = options;
+      return await bot.sendMessage(chatId, caption || '', {
+        parse_mode: rest.parse_mode || 'HTML',
+        disable_web_page_preview: true,
+        reply_markup: rest.reply_markup
+      });
     }
+
+    const stillNeedsUpload = shouldCacheMediaFileId(getImageUrl(key));
+    let msg;
+    if (use.type === 'video') {
+      msg = await bot.sendVideo(chatId, use.media, options);
+    } else if (use.type === 'animation') {
+      msg = await bot.sendAnimation(chatId, use.media, options);
+    } else {
+      msg = await bot.sendPhoto(chatId, use.media, options);
+    }
+
+    if (stillNeedsUpload && msg) {
+      await cacheSentMediaFileId(key, msg);
+    }
+    return msg;
+  } finally {
+    release();
   }
-  return msg;
 }
 
 function getUtcNow() {
@@ -406,16 +455,35 @@ async function reloadImagesCache() {
     if (!r.url) continue;
     // Ignore legacy remote defaults so bundled assets win
     if (/burnwithmerch\.com/i.test(r.url)) continue;
-    // Ignore stale absolute paths from another machine/deploy
-    const looksLocal =
-      !r.url.startsWith('http') &&
-      !r.url.startsWith('video:') &&
-      !r.url.startsWith('animation:') &&
-      (r.url.includes(path.sep) || /^[A-Za-z]:[\\/]/.test(r.url) || r.url.startsWith('/'));
-    if (looksLocal && !fs.existsSync(r.url)) continue;
-    next[r.key] = r.url;
+
+    const normalized = normalizeImageRef(r.url);
+    if (!normalized) continue;
+
+    // Prefer stored Telegram file_ids / URLs over bundled defaults
+    if (isTelegramFileRef(normalized) || isRemoteMediaUrl(normalized)) {
+      next[r.key] = normalized;
+      // Persist normalized form if we upgraded a bare file_id
+      if (normalized !== r.url) {
+        setImageUrl(r.key, normalized).catch((e) => {
+          console.error('normalize image ref persist failed', r.key, e?.message || e);
+        });
+      }
+      continue;
+    }
+
+    // Local path — only keep if the file exists on this machine
+    if (isLocalMediaPath(normalized)) {
+      next[r.key] = normalized;
+      continue;
+    }
+    // Stale path from another deploy — ignore, keep default
   }
   imagesCache = next;
+  const summary = Object.entries(imagesCache)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `${k}:${isTelegramFileRef(v) ? 'tg' : isRemoteMediaUrl(v) ? 'url' : 'file'}`)
+    .join(', ');
+  console.log(`[media] cache loaded: ${summary || '(defaults only)'}`);
 }
 await reloadImagesCache();
 
@@ -1005,14 +1073,14 @@ bot.on('message', async (msg) => {
           newUrl = `animation:${msg.animation.file_id}`;
         } else if (Array.isArray(msg.photo) && msg.photo.length > 0) {
           const best = msg.photo.reduce((a, b) => ((a.file_size || 0) > (b.file_size || 0) ? a : b));
-          newUrl = best.file_id;
+          newUrl = `photo:${best.file_id}`;
         } else if (msg.document && msg.document.file_id) {
           const mime = String(msg.document.mime_type || '');
           const name = msg.document.file_name || '';
           if (mime.startsWith('video/') || isVideoMedia(name)) {
             newUrl = `video:${msg.document.file_id}`;
           } else if (mime.startsWith('image/') || /\.(png|jpe?g|webp|gif)$/i.test(name)) {
-            newUrl = msg.document.file_id;
+            newUrl = `photo:${msg.document.file_id}`;
           }
         } else if (typeof msg.text === 'string' && /^https?:\/\//i.test(msg.text.trim())) {
           const candidate = msg.text.trim();

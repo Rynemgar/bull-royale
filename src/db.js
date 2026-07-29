@@ -279,18 +279,30 @@ export async function recordGiftClaim(chatId, userId, utcNow = new Date()) {
   );
 }
 
-export async function applyGrowth(chatId, userId, delta, utcNow = new Date()) {
+/**
+ * Atomically apply growth only if the cooldown has elapsed.
+ * Returns the updated user row, or null if still on cooldown (lost race / too soon).
+ */
+export async function tryApplyGrowth(chatId, userId, delta, utcNow = new Date()) {
   const d = roundCm(delta);
-  await pool.query(
+  const cutoff = new Date(utcNow.getTime() - GROW_COOLDOWN_MS);
+  const res = await pool.query(
     `
     update pf_users
     set length_cm = round(greatest(0, length_cm + $1)::numeric, 2),
-        last_grow_at = $2
+        last_grow_at = $2::timestamptz
     where chat_id = $3 and user_id = $4
+      and (last_grow_at is null or last_grow_at <= $5::timestamptz)
+    returning *
     `,
-    [d, utcNow.toISOString(), chatId, userId]
+    [d, utcNow.toISOString(), chatId, userId, cutoff.toISOString()]
   );
-  return await getUser(chatId, userId);
+  return res.rows[0] || null;
+}
+
+/** @deprecated Prefer tryApplyGrowth — kept as alias for callers expecting applyGrowth. */
+export async function applyGrowth(chatId, userId, delta, utcNow = new Date()) {
+  return tryApplyGrowth(chatId, userId, delta, utcNow);
 }
 
 export async function addLength(chatId, userId, delta) {

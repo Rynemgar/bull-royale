@@ -11,7 +11,7 @@ import {
   getUserByUsername,
   canGrow,
   getGrowCooldownRemainingMs,
-  applyGrowth,
+  tryApplyGrowth,
   addLength,
   setLength,
   createChallenge,
@@ -577,48 +577,74 @@ async function notifyBotAddedToGroup(chat, actor) {
   }
 }
 
+const growInFlight = new Set(); // `${chatId}:${userId}` — blocks same-process double /grow
+
 async function performGrow(chatId, user) {
   const userId = user.id;
-  const utcNow = getUtcNow();
-  const allowed = await canGrow(chatId, userId, utcNow);
-  if (!allowed) {
-    const remaining = await getGrowCooldownRemainingMs(chatId, userId, utcNow);
-    const caption =
-      `You've already grown your horns recently. Wait ${formatCooldown(remaining)}.\n` +
-      `Free growth resets every ${GROW_COOLDOWN_HOURS} hours.`;
-    await sendKeyedMedia(chatId, 'grow', {
+  const lockKey = `${chatId}:${userId}`;
+  if (growInFlight.has(lockKey)) {
+    // Second tap while first is still running — ignore silently
+    return { ok: false, reason: 'busy' };
+  }
+  growInFlight.add(lockKey);
+
+  try {
+    const utcNow = getUtcNow();
+    const allowed = await canGrow(chatId, userId, utcNow);
+    if (!allowed) {
+      const remaining = await getGrowCooldownRemainingMs(chatId, userId, utcNow);
+      const caption =
+        `You've already grown your horns recently. Wait ${formatCooldown(remaining)}.\n` +
+        `Free growth resets every ${GROW_COOLDOWN_HOURS} hours.`;
+      await sendKeyedMedia(chatId, 'grow', {
+        parse_mode: 'HTML',
+        caption: addFooter(caption)
+      });
+      return { ok: false, reason: 'cooldown' };
+    }
+
+    const current = await getUser(chatId, userId);
+    const mustBePositive = current && Number(current.length_cm) === 0;
+    const delta = randomGrowDelta(mustBePositive);
+    // Atomic cooldown gate — only one concurrent grow can win
+    let updated = await tryApplyGrowth(chatId, userId, delta, utcNow);
+    if (!updated) {
+      const remaining = await getGrowCooldownRemainingMs(chatId, userId, utcNow);
+      const caption =
+        `You've already grown your horns recently. Wait ${formatCooldown(remaining)}.\n` +
+        `Free growth resets every ${GROW_COOLDOWN_HOURS} hours.`;
+      await sendKeyedMedia(chatId, 'grow', {
+        parse_mode: 'HTML',
+        caption: addFooter(caption)
+      });
+      return { ok: false, reason: 'cooldown' };
+    }
+
+    const sign = delta >= 0 ? '+' : '';
+
+    const snap = await maybeSnapHorns(chatId, userId, updated.length_cm);
+    if (snap.snapped) {
+      updated = await getUser(chatId, userId);
+      const caption =
+        `${getUsernameLabel(user)} used /grow: ${sign}${formatCm(delta)}cm… but their horns SNAPPED!\n` +
+        `${formatCm(snap.before)}cm → stump of ${formatCm(snap.after)}cm.`;
+      await sendKeyedMedia(chatId, 'snap', {
+        parse_mode: 'HTML',
+        caption: addFooter(caption)
+      });
+      return { ok: true, snapped: true, updated };
+    }
+
+    const caption = `${getUsernameLabel(user)} used /grow: ${sign}${formatCm(delta)}cm. Current horns: ${formatCm(updated.length_cm)}cm.`;
+    const mediaKey = delta < 0 ? 'snap' : 'grow';
+    await sendKeyedMedia(chatId, mediaKey, {
       parse_mode: 'HTML',
       caption: addFooter(caption)
     });
-    return { ok: false, reason: 'cooldown' };
+    return { ok: true, snapped: false, updated };
+  } finally {
+    growInFlight.delete(lockKey);
   }
-
-  const current = await getUser(chatId, userId);
-  const mustBePositive = current && Number(current.length_cm) === 0;
-  const delta = randomGrowDelta(mustBePositive);
-  let updated = await applyGrowth(chatId, userId, delta, utcNow);
-  const sign = delta >= 0 ? '+' : '';
-
-  const snap = await maybeSnapHorns(chatId, userId, updated.length_cm);
-  if (snap.snapped) {
-    updated = await getUser(chatId, userId);
-    const caption =
-      `${getUsernameLabel(user)} used /grow: ${sign}${formatCm(delta)}cm… but their horns SNAPPED!\n` +
-      `${formatCm(snap.before)}cm → stump of ${formatCm(snap.after)}cm.`;
-    await sendKeyedMedia(chatId, 'snap', {
-      parse_mode: 'HTML',
-      caption: addFooter(caption)
-    });
-    return { ok: true, snapped: true, updated };
-  }
-
-  const caption = `${getUsernameLabel(user)} used /grow: ${sign}${formatCm(delta)}cm. Current horns: ${formatCm(updated.length_cm)}cm.`;
-  const mediaKey = delta < 0 ? 'snap' : 'grow';
-  await sendKeyedMedia(chatId, mediaKey, {
-    parse_mode: 'HTML',
-    caption: addFooter(caption)
-  });
-  return { ok: true, snapped: false, updated };
 }
 
 // /help — groups only when bot is tagged (/help@BotName)

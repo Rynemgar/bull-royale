@@ -31,7 +31,9 @@ import {
   updateGroupRewards,
   GROW_COOLDOWN_HOURS,
   getGiftClaimCooldownRemainingMs,
-  recordGiftClaim
+  recordGiftClaim,
+  setGameTopicId,
+  withGameTopic
 } from './db.js';
 import {
   buildSetbullMenu,
@@ -248,23 +250,25 @@ const mediaSendChains = new Map(); // key -> Promise
 
 async function sendKeyedMediaOnce(chatId, key, options = {}) {
   const use = resolveMedia(key);
+  const sendOpts = await withGameTopic(chatId, options);
   if (!use || !use.media) {
-    const { caption, ...rest } = options;
+    const { caption, ...rest } = sendOpts;
     return bot.sendMessage(chatId, caption || '', {
       parse_mode: rest.parse_mode || 'HTML',
       disable_web_page_preview: true,
-      reply_markup: rest.reply_markup
+      reply_markup: rest.reply_markup,
+      message_thread_id: rest.message_thread_id
     });
   }
 
   const stillNeedsUpload = shouldCacheMediaFileId(getImageUrl(key));
   let msg;
   if (use.type === 'video') {
-    msg = await bot.sendVideo(chatId, use.media, options);
+    msg = await bot.sendVideo(chatId, use.media, sendOpts);
   } else if (use.type === 'animation') {
-    msg = await bot.sendAnimation(chatId, use.media, options);
+    msg = await bot.sendAnimation(chatId, use.media, sendOpts);
   } else {
-    msg = await bot.sendPhoto(chatId, use.media, options);
+    msg = await bot.sendPhoto(chatId, use.media, sendOpts);
   }
 
   if (stillNeedsUpload && msg) {
@@ -408,12 +412,17 @@ function withGrowButton(options) {
   };
 }
 
-function sendWithGrow(chatId, text, options) {
-  return bot.sendMessage(chatId, addFooter(text), withGrowButton(options));
+async function sendWithGrow(chatId, text, options) {
+  const opts = await withGameTopic(chatId, withGrowButton(options));
+  return bot.sendMessage(chatId, addFooter(text), opts);
 }
 
-function sendWithFooter(chatId, text, options) {
-  const opts = { ...(options || {}), parse_mode: 'HTML', disable_web_page_preview: true };
+async function sendWithFooter(chatId, text, options) {
+  const opts = await withGameTopic(chatId, {
+    ...(options || {}),
+    parse_mode: 'HTML',
+    disable_web_page_preview: true
+  });
   return bot.sendMessage(chatId, addFooter(text), opts);
 }
 
@@ -674,9 +683,9 @@ bot.onText(commandRegex('prize'), async (msg) => {
     try {
       await bot.sendMessage(userId, coolText);
     } catch {
-      const notice = await bot.sendMessage(chatId, coolText, {
+      const notice = await bot.sendMessage(chatId, coolText, await withGameTopic(chatId, {
         reply_to_message_id: msg.message_id
-      });
+      }));
       setTimeout(() => {
         bot.deleteMessage(chatId, notice.message_id).catch(() => {});
       }, 8000);
@@ -814,13 +823,13 @@ bot.onText(commandRegex('gift'), async (msg) => {
       `${adminLabel} dropped a gift.\n` +
       `First to claim gets a random <b>+5–20cm</b> of horns.`;
 
-    await bot.sendMessage(chatId, addFooter(text), {
+    await bot.sendMessage(chatId, addFooter(text), await withGameTopic(chatId, {
       parse_mode: 'HTML',
       disable_web_page_preview: true,
       reply_markup: {
         inline_keyboard: [[{ text: 'Claim gift', callback_data: `giftclaim:${giftId}` }]]
       }
-    });
+    }));
   } catch (err) {
     console.error('gift error', err);
     await sendWithFooter(chatId, 'Failed to drop a gift.');
@@ -913,14 +922,62 @@ bot.onText(commandRegex('update'), async (msg) => {
     [{ text: 'Update Attack (photo/video)', callback_data: 'imgupd:attack' }],
     [{ text: 'Update Attack Resolved (photo/video)', callback_data: 'imgupd:attack_resolved' }]
   ];
-  await bot.sendMessage(chatId, addFooter('Admin: Choose which media to update.'), {
+  await bot.sendMessage(chatId, addFooter('Admin: Choose which media to update.'), await withGameTopic(chatId, {
     parse_mode: 'HTML',
     disable_web_page_preview: true,
     reply_markup: { inline_keyboard: keyboard }
-  });
+  }));
 });
 
 const pendingImageUpdate = new Map();
+
+// /settopic — bind Bull Royale replies to this forum topic (group admin / owner)
+bot.onText(commandRegex('settopic', '(?:\\s+(clear|off))?(?:\\s|$)'), async (msg, match) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') {
+    await sendWithFooter(chatId, 'Use /settopic in a group forum topic.');
+    return;
+  }
+  if (!(await canManageSetbull(chatId, msg.from.id))) return;
+
+  const clear = String(match?.[1] || '').toLowerCase();
+  try {
+    if (clear === 'clear' || clear === 'off') {
+      await setGameTopicId(chatId, null);
+      await sendWithFooter(chatId, 'Game topic cleared. Bull Royale will post in the main chat again.');
+      return;
+    }
+
+    const threadId = msg.message_thread_id;
+    if (threadId == null) {
+      await sendWithFooter(
+        chatId,
+        'Run /settopic <b>inside</b> a forum topic to bind the game there.\n' +
+        'Or use /settopic clear to remove the binding.'
+      );
+      return;
+    }
+
+    await setGameTopicId(chatId, threadId);
+    await bot.sendMessage(
+      chatId,
+      addFooter(
+        'This topic is now the Bull Royale game channel.\n' +
+        'Grow, attacks, gifts, leaderboards, and reward messages will post here.\n' +
+        'Use /settopic clear to undo.'
+      ),
+      {
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+        message_thread_id: threadId
+      }
+    );
+  } catch (err) {
+    console.error('settopic error', err);
+    await sendWithFooter(chatId, 'Could not set the game topic.');
+  }
+});
 
 // /setbull — group admin (or primary owner) rewards dashboard
 bot.onText(commandRegex('setbull'), async (msg) => {
@@ -941,11 +998,11 @@ bot.onText(commandRegex('setbull'), async (msg) => {
       }
     }
     const menu = await buildSetbullMenu(chatId, msg.from.id);
-    const sent = await bot.sendMessage(chatId, addFooter(menu.text), {
+    const sent = await bot.sendMessage(chatId, addFooter(menu.text), await withGameTopic(chatId, {
       parse_mode: 'HTML',
       disable_web_page_preview: true,
       reply_markup: menu.reply_markup
-    });
+    }));
     rememberSetbullMenu(chatId, sent.message_id, msg.from.id);
   } catch (err) {
     console.error('setbull error', err);
@@ -1176,7 +1233,10 @@ bot.on('message', async (msg) => {
                 disable_web_page_preview: true
               });
             } catch {
-              await bot.sendMessage(msg.chat.id, addFooter(prompt), { parse_mode: 'HTML', disable_web_page_preview: true });
+              await bot.sendMessage(msg.chat.id, addFooter(prompt), await withGameTopic(msg.chat.id, {
+                parse_mode: 'HTML',
+                disable_web_page_preview: true
+              }));
             }
             return;
           }
@@ -1194,7 +1254,10 @@ bot.on('message', async (msg) => {
               disable_web_page_preview: true
             });
           } catch {
-            await bot.sendMessage(msg.chat.id, addFooter(prompt), { parse_mode: 'HTML', disable_web_page_preview: true });
+            await bot.sendMessage(msg.chat.id, addFooter(prompt), await withGameTopic(msg.chat.id, {
+              parse_mode: 'HTML',
+              disable_web_page_preview: true
+            }));
           }
           return;
         }
@@ -1237,10 +1300,10 @@ bot.on('message', async (msg) => {
             disable_web_page_preview: true
           });
         } catch {
-          await bot.sendMessage(msg.chat.id, addFooter(`✅ Updated ${label} ${kind}.${cachedNote}`), {
+          await bot.sendMessage(msg.chat.id, addFooter(`✅ Updated ${label} ${kind}.${cachedNote}`), await withGameTopic(msg.chat.id, {
             parse_mode: 'HTML',
             disable_web_page_preview: true
-          });
+          }));
         }
         pendingImageUpdate.delete(msg.from.id);
         return;
@@ -1413,11 +1476,11 @@ bot.on('callback_query', async (query) => {
       const prompt =
         `Send a photo, video, or media URL to set the ${label} media.\n` +
         `Current: ${current}`;
-      const sent = await bot.sendMessage(chatId, addFooter(prompt), {
+      const sent = await bot.sendMessage(chatId, addFooter(prompt), await withGameTopic(chatId, {
         parse_mode: 'HTML',
         disable_web_page_preview: true,
         reply_markup: { force_reply: true }
-      });
+      }));
       pendingImageUpdate.set(fromId, { key, chatId, replyToMessageId: sent.message_id });
       if (query.id) await bot.answerCallbackQuery(query.id);
     } catch (e) {

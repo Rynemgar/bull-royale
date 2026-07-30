@@ -11,7 +11,8 @@ import {
   getUserWallet,
   getEligibleRewardWinners,
   recordRewardPayout,
-  listGroupsDueForRewards
+  listGroupsDueForRewards,
+  withGameTopic
 } from './db.js';
 import {
   generateGroupWallet,
@@ -27,6 +28,18 @@ import {
   sendSplReward,
   cascadingShares
 } from './solana.js';
+
+async function sendInGroup(bot, chatId, text, options = {}) {
+  return bot.sendMessage(
+    chatId,
+    text,
+    await withGameTopic(chatId, {
+      parse_mode: 'HTML',
+      disable_web_page_preview: true,
+      ...options
+    })
+  );
+}
 
 export const pendingSetbull = new Map(); // userId -> { chatId, field, replyToMessageId, menuMessageId }
 export const pendingSetwallet = new Map(); // userId -> { notifyChatId? }
@@ -202,8 +215,7 @@ async function promptSetbullField(bot, chatId, user, field, prompt, menuMessageI
   const who = user.username
     ? `@${escHtml(user.username)}`
     : `<a href="tg://user?id=${userId}">${escHtml(user.first_name || 'admin')}</a>`;
-  const sent = await bot.sendMessage(chatId, `${who} ${prompt}`, {
-    parse_mode: 'HTML',
+  const sent = await sendInGroup(bot, chatId, `${who} ${prompt}`, {
     reply_markup: { force_reply: true, selective: true }
   });
   pendingSetbull.set(userId, {
@@ -400,10 +412,10 @@ export async function handleSetbullCallback(bot, query, addFooter, getUsernameLa
     } catch (e) {
       console.error('manual run rewards failed', chatId, e?.message || e);
       try {
-        await bot.sendMessage(
+        await sendInGroup(
+          bot,
           chatId,
-          addFooter(`Manual reward run failed: ${escHtml(e?.message || e)}`),
-          { parse_mode: 'HTML', disable_web_page_preview: true }
+          addFooter(`Manual reward run failed: ${escHtml(e?.message || e)}`)
         );
       } catch {}
     }
@@ -538,10 +550,7 @@ export async function handleSetbullPendingInput(bot, msg, addFooter) {
   if (ok) {
     await refreshSetbullMenu(bot, chatId, addFooter, state.menuMessageId);
   } else if (errText) {
-    const notice = await bot.sendMessage(chatId, addFooter(errText), {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true
-    });
+    const notice = await sendInGroup(bot, chatId, addFooter(errText));
     await refreshSetbullMenu(bot, chatId, addFooter, state.menuMessageId);
     setTimeout(() => {
       bot.deleteMessage(chatId, notice.message_id).catch(() => {});
@@ -573,10 +582,10 @@ export async function handleSetwalletPending(bot, msg, addFooter, getUsernameLab
   );
   if (state.notifyChatId) {
     try {
-      await bot.sendMessage(
+      await sendInGroup(
+        bot,
         state.notifyChatId,
-        addFooter(`${getUsernameLabel(msg.from)} registered a Solana wallet for rewards.`),
-        { parse_mode: 'HTML', disable_web_page_preview: true }
+        addFooter(`${getUsernameLabel(msg.from)} registered a Solana wallet for rewards.`)
       );
     } catch {}
   }
@@ -610,10 +619,7 @@ export async function startSetwalletFlow(bot, msg, addFooter) {
   // Group: nudge + DM
   const chatId = chat.id;
   pendingSetwallet.set(user.id, { notifyChatId: chatId });
-  await bot.sendMessage(chatId, addFooter(`${getUsernameLabelSafe(user)}: check your DMs to register your Solana wallet.`), {
-    parse_mode: 'HTML',
-    disable_web_page_preview: true
-  });
+  await sendInGroup(bot, chatId, addFooter(`${getUsernameLabelSafe(user)}: check your DMs to register your Solana wallet.`));
 
   try {
     await bot.sendMessage(
@@ -644,25 +650,19 @@ export async function handleNobull(bot, msg, addFooter, isAdminUser, getUsername
   if (!msg.chat || !msg.from) return;
   if (!isAdminUser(msg.from.id)) return;
   if (!msg.reply_to_message?.from) {
-    await bot.sendMessage(msg.chat.id, addFooter('Reply to a user\'s message with /nobull to blacklist them from rewards.'), {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true
-    });
+    await sendInGroup(bot, msg.chat.id, addFooter('Reply to a user\'s message with /nobull to blacklist them from rewards.'));
     return;
   }
   const target = msg.reply_to_message.from;
   if (target.is_bot) {
-    await bot.sendMessage(msg.chat.id, addFooter('Cannot blacklist a bot.'), {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true
-    });
+    await sendInGroup(bot, msg.chat.id, addFooter('Cannot blacklist a bot.'));
     return;
   }
   await addRewardBlacklist(msg.chat.id, target.id, msg.from.id);
-  await bot.sendMessage(
+  await sendInGroup(
+    bot,
     msg.chat.id,
-    addFooter(`${getUsernameLabel(target)} has been blacklisted from rewards.`),
-    { parse_mode: 'HTML', disable_web_page_preview: true }
+    addFooter(`${getUsernameLabel(target)} has been blacklisted from rewards.`)
   );
 }
 
@@ -716,14 +716,14 @@ async function processGroupPayout(bot, group, addFooter, getUsernameLabel, optio
       period_started_at: now
     });
     try {
-      await bot.sendMessage(
+      await sendInGroup(
+        bot,
         chatId,
         addFooter(
           force
             ? 'Manual reward run: no eligible winners (not blacklisted). Period restarted.'
             : 'Reward period ended, but no eligible winners (not blacklisted). Period restarted.'
-        ),
-        { parse_mode: 'HTML', disable_web_page_preview: true }
+        )
       );
     } catch {}
     return { paid: false, due: true };
@@ -848,10 +848,10 @@ async function processGroupPayout(bot, group, addFooter, getUsernameLabel, optio
     });
     const lines = results.map(formatResultLine);
     try {
-      await bot.sendMessage(
+      await sendInGroup(
+        bot,
         chatId,
-        addFooter(`<b>${force ? 'Manual reward payout' : 'Reward payout'}</b>\n${lines.join('\n')}`),
-        { parse_mode: 'HTML', disable_web_page_preview: true }
+        addFooter(`<b>${force ? 'Manual reward payout' : 'Reward payout'}</b>\n${lines.join('\n')}`)
       );
     } catch {}
     return { paid: okCount > 0, due: true };
@@ -873,10 +873,7 @@ async function maybeNotifyPayoutBlocked(bot, chatId, addFooter, htmlBody) {
   if (Date.now() - last < 15 * 60 * 1000) return;
   lastPayoutFailNotifyAt.set(key, Date.now());
   try {
-    await bot.sendMessage(chatId, addFooter(htmlBody), {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true
-    });
+    await sendInGroup(bot, chatId, addFooter(htmlBody));
   } catch (e) {
     console.error('payout blocked notify failed', chatId, e?.message || e);
   }
@@ -901,15 +898,15 @@ async function maybeLowBalanceAlert(bot, group, addFooter) {
   await updateGroupRewards(group.chat_id, { last_low_balance_alert_at: new Date() });
   try {
     const name = await getTokenMetadataName(group.reward_mint).catch(() => 'reward token');
-    await bot.sendMessage(
+    await sendInGroup(
+      bot,
       group.chat_id,
       addFooter(
         `<b>Treasury low</b>\n` +
         `The rewards wallet cannot cover the next payout of ${group.reward_amount} ${escHtml(name)}.\n` +
         `Current balance: ${bal.ui}\n` +
         `<code>${escHtml(group.wallet_pubkey)}</code>`
-      ),
-      { parse_mode: 'HTML', disable_web_page_preview: true }
+      )
     );
   } catch (e) {
     console.error('low balance alert send failed', e?.message || e);

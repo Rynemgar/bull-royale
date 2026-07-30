@@ -115,6 +115,13 @@ export async function initSchema() {
       );
     `);
     await client.query(`
+      create table if not exists pf_group_settings (
+        chat_id bigint primary key,
+        game_topic_id bigint null,
+        updated_at timestamptz not null default now()
+      );
+    `);
+    await client.query(`
       create table if not exists pf_group_rewards (
         chat_id bigint primary key,
         wallet_pubkey text,
@@ -594,6 +601,49 @@ export async function setImageUrl(key, url) {
     [key, url]
   );
   return res.rows[0];
+}
+
+const gameTopicCache = new Map(); // chatId -> number|null
+
+/** Forum topic id for game posts in this chat, or null for main chat. */
+export async function getGameTopicId(chatId) {
+  const key = Number(chatId);
+  if (gameTopicCache.has(key)) return gameTopicCache.get(key);
+  const res = await pool.query(
+    `select game_topic_id from pf_group_settings where chat_id = $1`,
+    [key]
+  );
+  const raw = res.rows[0]?.game_topic_id;
+  const topicId = raw == null ? null : Number(raw);
+  gameTopicCache.set(key, topicId);
+  return topicId;
+}
+
+/** Set or clear (null) the forum topic used for Bull Royale replies. */
+export async function setGameTopicId(chatId, topicId) {
+  const key = Number(chatId);
+  const value = topicId == null ? null : Number(topicId);
+  await pool.query(
+    `insert into pf_group_settings (chat_id, game_topic_id, updated_at)
+     values ($1, $2, now())
+     on conflict (chat_id) do update
+       set game_topic_id = excluded.game_topic_id, updated_at = now()`,
+    [key, value]
+  );
+  gameTopicCache.set(key, value);
+  return value;
+}
+
+/** Options helper: attach message_thread_id when a game topic is configured. */
+export async function withGameTopic(chatId, options = {}) {
+  const opts = { ...(options || {}) };
+  // Never force a topic into private chats
+  if (opts.message_thread_id != null) return opts;
+  const topicId = await getGameTopicId(chatId);
+  if (topicId != null) {
+    opts.message_thread_id = topicId;
+  }
+  return opts;
 }
 
 function mapGroupRewards(row) {

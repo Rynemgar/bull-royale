@@ -33,7 +33,9 @@ import {
   getGiftClaimCooldownRemainingMs,
   recordGiftClaim,
   setGameTopicId,
-  withGameTopic
+  withGameTopic,
+  isGamePaused,
+  setGamePaused
 } from './db.js';
 import {
   buildSetbullMenu,
@@ -76,6 +78,22 @@ async function canManageSetbull(chatId, userId) {
   } catch {
     return false;
   }
+}
+
+/** /pausegame /unpausegame: Telegram group owner, or support (primary admin). */
+async function canPauseGame(chatId, userId) {
+  if (Number(userId) === ADMIN_USER_ID) return true;
+  try {
+    const member = await bot.getChatMember(chatId, userId);
+    return member?.status === 'creator';
+  } catch {
+    return false;
+  }
+}
+
+/** Returns true when gameplay should proceed. Silent no-op when paused. */
+async function allowGameplay(chatId) {
+  return !(await isGamePaused(chatId));
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -671,6 +689,7 @@ bot.onText(commandRegex('help'), async (msg) => {
 bot.onText(commandRegex('prize'), async (msg) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
+  if (!(await allowGameplay(chatId))) return;
   const userId = msg.from.id;
   const cdKey = prizeCooldownKey(chatId, userId);
   const lastAt = prizeCooldownAt.get(cdKey) || 0;
@@ -743,6 +762,7 @@ bot.onText(commandRegex('prize'), async (msg) => {
 bot.onText(commandRegex('grow'), async (msg) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
+  if (!(await allowGameplay(chatId))) return;
   const user = msg.from;
   await ensureUser(chatId, user);
   try {
@@ -763,6 +783,7 @@ bot.onText(commandRegex('grow'), async (msg) => {
 bot.onText(commandRegex('average'), async (msg) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
+  if (!(await allowGameplay(chatId))) return;
   await ensureUser(chatId, msg.from);
   try {
     const groupAvgRow = await getGroupAverageAndRank(chatId);
@@ -791,6 +812,7 @@ const openGifts = new Map(); // giftId -> { chatId, claimed }
 bot.onText(commandRegex('gift'), async (msg) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
+  if (!(await allowGameplay(chatId))) return;
   const from = msg.from;
 
   if (!(await canManageSetbull(chatId, from.id))) {
@@ -840,6 +862,7 @@ bot.onText(commandRegex('gift'), async (msg) => {
 bot.onText(commandRegex('top'), async (msg) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
+  if (!(await allowGameplay(chatId))) return;
   await ensureUser(chatId, msg.from);
   try {
     const top = await getTopUsers(chatId, 10);
@@ -871,6 +894,7 @@ bot.onText(commandRegex('top'), async (msg) => {
 bot.onText(commandRegex('attack', '(?:\\s+(\\d+(?:\\.\\d{1,2})?))?(?:\\s|$)'), async (msg, match) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
+  if (!(await allowGameplay(chatId))) return;
   const user = msg.from;
   const userId = user.id;
   await ensureUser(chatId, user);
@@ -976,6 +1000,53 @@ bot.onText(commandRegex('settopic', '(?:\\s+(clear|off))?(?:\\s|$)'), async (msg
   } catch (err) {
     console.error('settopic error', err);
     await sendWithFooter(chatId, 'Could not set the game topic.');
+  }
+});
+
+const PAUSE_ANNOUNCE =
+  '<b>Bull Royale is paused.</b>\n' +
+  'Focus needs to be on raiding, not gaming.\n' +
+  'Game commands are disabled until an owner unpauses.';
+
+const UNPAUSE_ANNOUNCE =
+  '<b>Bull Royale is live again.</b>\n' +
+  'You can grow, attack, and play as usual.';
+
+// /pausegame — group owner or support only
+bot.onText(commandRegex('pausegame'), async (msg) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
+  if (!(await canPauseGame(chatId, msg.from.id))) return;
+
+  try {
+    if (await isGamePaused(chatId)) {
+      await sendWithFooter(chatId, 'The game is already paused.');
+      return;
+    }
+    await setGamePaused(chatId, true);
+    await sendWithFooter(chatId, PAUSE_ANNOUNCE);
+  } catch (err) {
+    console.error('pausegame error', err);
+  }
+});
+
+// /unpausegame — group owner or support only
+bot.onText(commandRegex('unpausegame'), async (msg) => {
+  if (!msg.chat || !msg.from) return;
+  const chatId = msg.chat.id;
+  if (msg.chat.type !== 'group' && msg.chat.type !== 'supergroup') return;
+  if (!(await canPauseGame(chatId, msg.from.id))) return;
+
+  try {
+    if (!(await isGamePaused(chatId))) {
+      await sendWithFooter(chatId, 'The game is not paused.');
+      return;
+    }
+    await setGamePaused(chatId, false);
+    await sendWithFooter(chatId, UNPAUSE_ANNOUNCE);
+  } catch (err) {
+    console.error('unpausegame error', err);
   }
 });
 
@@ -1107,6 +1178,7 @@ bot.onText(commandRegex('nobull'), async (msg) => {
 bot.onText(commandRegex('stats', '(?:\\s+(.+))?(?:\\s|$)'), async (msg, match) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
+  if (!(await allowGameplay(chatId))) return;
   const user = msg.from;
   await ensureUser(chatId, user);
   try {
@@ -1154,6 +1226,7 @@ bot.onText(commandRegex('stats', '(?:\\s+(.+))?(?:\\s|$)'), async (msg, match) =
 bot.onText(commandRegex('bulloftheday'), async (msg) => {
   if (!msg.chat || !msg.from) return;
   const chatId = msg.chat.id;
+  if (!(await allowGameplay(chatId))) return;
   await ensureUser(chatId, msg.from);
   const utcNow = getUtcNow();
   try {
@@ -1362,6 +1435,10 @@ bot.on('callback_query', async (query) => {
 
   if (data === 'grow_now') {
     try {
+      if (!(await allowGameplay(chatId))) {
+        if (query.id) await bot.answerCallbackQuery(query.id);
+        return;
+      }
       await ensureUser(chatId, from);
       const result = await performGrow(chatId, from);
       if (query.id) {
@@ -1382,6 +1459,10 @@ bot.on('callback_query', async (query) => {
     const giftId = data.slice('giftclaim:'.length);
     const gift = openGifts.get(giftId);
     try {
+      if (!(await allowGameplay(chatId))) {
+        if (query.id) await bot.answerCallbackQuery(query.id);
+        return;
+      }
       if (!gift || gift.chatId !== chatId) {
         if (query.id) {
           await bot.answerCallbackQuery(query.id, { text: 'This gift is no longer available.', show_alert: true });
@@ -1498,6 +1579,10 @@ bot.on('callback_query', async (query) => {
   }
 
   try {
+    if (!(await allowGameplay(chatId))) {
+      if (query.id) await bot.answerCallbackQuery(query.id);
+      return;
+    }
     const challenge = await getOpenChallengeByMessageId(chatId, msg.message_id);
     if (!challenge) {
       if (query.id) await bot.answerCallbackQuery(query.id, { text: 'This challenge has been cancelled.' });

@@ -118,8 +118,13 @@ export async function initSchema() {
       create table if not exists pf_group_settings (
         chat_id bigint primary key,
         game_topic_id bigint null,
+        game_paused boolean not null default false,
         updated_at timestamptz not null default now()
       );
+    `);
+    await client.query(`
+      alter table pf_group_settings
+        add column if not exists game_paused boolean not null default false
     `);
     await client.query(`
       create table if not exists pf_group_rewards (
@@ -604,6 +609,7 @@ export async function setImageUrl(key, url) {
 }
 
 const gameTopicCache = new Map(); // chatId -> number|null
+const gamePausedCache = new Map(); // chatId -> boolean
 
 /** Forum topic id for game posts in this chat, or null for main chat. */
 export async function getGameTopicId(chatId) {
@@ -631,6 +637,34 @@ export async function setGameTopicId(chatId, topicId) {
     [key, value]
   );
   gameTopicCache.set(key, value);
+  return value;
+}
+
+/** Whether Bull Royale gameplay is paused for this group. */
+export async function isGamePaused(chatId) {
+  const key = Number(chatId);
+  if (gamePausedCache.has(key)) return gamePausedCache.get(key);
+  const res = await pool.query(
+    `select game_paused from pf_group_settings where chat_id = $1`,
+    [key]
+  );
+  const paused = Boolean(res.rows[0]?.game_paused);
+  gamePausedCache.set(key, paused);
+  return paused;
+}
+
+/** Pause or unpause gameplay for this group. */
+export async function setGamePaused(chatId, paused) {
+  const key = Number(chatId);
+  const value = Boolean(paused);
+  await pool.query(
+    `insert into pf_group_settings (chat_id, game_paused, updated_at)
+     values ($1, $2, now())
+     on conflict (chat_id) do update
+       set game_paused = excluded.game_paused, updated_at = now()`,
+    [key, value]
+  );
+  gamePausedCache.set(key, value);
   return value;
 }
 
